@@ -191,7 +191,7 @@ if selected_items:
                 help="Процент от суммы работ и материалов"
             )
         with col3:
-            vat_on = st.checkbox("НДС 20%", value=False,
+            vat_on = st.checkbox("НДС 22%", value=False,
                                  help="Включить НДС в итоговую сумму КП")
 
     fin_settings = {

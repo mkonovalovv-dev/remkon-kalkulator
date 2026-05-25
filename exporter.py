@@ -24,7 +24,7 @@ import io
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
-SMETA_SHEET = "Смета Ремкон"
+SMETA_SHEET = "Smeta"
 
 # ─── ЦВЕТА ──────────────────────────────────
 _C = {
@@ -89,7 +89,7 @@ def _cell(ws, row, col, val="", bold=False, color="000000", size=9,
 # Возвращает tracker: {item_id: {g, ws: [rows], ms: [rows]}}
 def _build_smeta(ws, client, obj_name, proj_date,
                  items, qty, extra, fin):
-    ws.title = SMETA_SHEET
+    ws.title = SMETA_SHEET  # "Smeta" — без кириллицы, чтобы формулы работали
 
     # ширина колонок: A B C D E F G H I J
     for col, w in [("A",6),("B",50),("C",9),("D",11),
@@ -321,7 +321,7 @@ def _build_smeta(ws, client, obj_name, proj_date,
         r += 1
 
     # Итого без НДС
-    parts = [f"I{wm_row}", f"I{wm_row-1}"]  # wm + extras
+    parts = [f"I{wm_row}", f"I{wm_row+1}"]  # wm + extras (доп. расходы на строке wm_row+1)
     if overhead_row: parts.append(f"I{overhead_row}")
     if profit_row:   parts.append(f"I{profit_row}")
     base_row = r
@@ -337,8 +337,8 @@ def _build_smeta(ws, client, obj_name, proj_date,
     if fin["vat"]:
         vat_row = r
         ws.merge_cells(f"A{r}:H{r}")
-        _cell(ws, r, 1, "НДС 20%:", bold=True, size=10, bg=_C["info_bg"], align="right", wrap=False)
-        c = _cell(ws, r, 9, f"=I{base_row}*0.20",
+        _cell(ws, r, 1, "НДС 22%:", bold=True, size=10, bg=_C["info_bg"], align="right", wrap=False)
+        c = _cell(ws, r, 9, f"=I{base_row}*0.22",
                   bold=True, size=10, bg=_C["info_bg"], align="right")
         c.number_format = RUB
         _cell(ws, r, 10, "", bg=_C["info_bg"])
@@ -346,7 +346,7 @@ def _build_smeta(ws, client, obj_name, proj_date,
         r += 1
         final_row = r
         ws.merge_cells(f"A{r}:H{r}")
-        _cell(ws, r, 1, "ИТОГО С НДС:", bold=True, color=_C["fin_fg"],
+        _cell(ws, r, 1, "ИТОГО С НДС 22%:", bold=True, color=_C["fin_fg"],
               size=11, bg=_C["fin_bg"], align="right", wrap=False)
         c = _cell(ws, r, 9, f"=I{base_row}+I{vat_row}",
                   bold=True, color=_C["fin_fg"], size=11, bg=_C["fin_bg"], align="right")
@@ -570,8 +570,8 @@ def _build_kp(ws, client, address, obj_name, area, proj_date,
         (f"Итого без НДС:", S("I", smeta_base_row), "D9EAD3", "000000"),
     ]
     if fin["vat"]:
-        fin_rows_kp.append((f"НДС 20%:", S("I", smeta_base_row + 1), _C["info_bg"], "000000"))
-        fin_rows_kp.append(("ИТОГО С НДС:", S("I", smeta_final_row), _C["fin_bg"], _C["fin_fg"]))
+        fin_rows_kp.append((f"НДС 22%:", S("I", smeta_base_row + 1), _C["info_bg"], "000000"))
+        fin_rows_kp.append(("ИТОГО С НДС 22%:", S("I", smeta_final_row), _C["fin_bg"], _C["fin_fg"]))
     else:
         fin_rows_kp.append(("ИТОГО К ОПЛАТЕ:", S("I", smeta_final_row), _C["fin_bg"], _C["fin_fg"]))
 
