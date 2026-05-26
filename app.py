@@ -55,6 +55,21 @@ st.markdown("---")
 all_items = load_data()
 
 # ─────────────────────────────────────────────
+# ИНИЦИАЛИЗАЦИЯ SESSION STATE
+# ─────────────────────────────────────────────
+from default_data import SECTION_ORDER as DEFAULT_SECTION_ORDER
+
+if "section_order" not in st.session_state:
+    st.session_state["section_order"] = list(DEFAULT_SECTION_ORDER)
+if "custom_items" not in st.session_state:
+    st.session_state["custom_items"] = []
+if "adding_to_section" not in st.session_state:
+    st.session_state["adding_to_section"] = None
+
+# Объединяем базовые + пользовательские позиции
+all_items_combined = all_items + st.session_state["custom_items"]
+
+# ─────────────────────────────────────────────
 # ШАГ 0: ИНФОРМАЦИЯ ОБ ОБЪЕКТЕ
 # ─────────────────────────────────────────────
 with st.expander("📋 Информация об объекте", expanded=True):
@@ -74,32 +89,192 @@ with st.expander("📋 Информация об объекте", expanded=True)
 st.markdown("---")
 
 # ─────────────────────────────────────────────
+# КОНСТРУКТОР РАЗДЕЛОВ
+# ─────────────────────────────────────────────
+with st.expander("🔧 Конструктор разделов и позиций", expanded=False):
+    st.caption("Меняйте порядок разделов ↕ · Создавайте свои разделы · Добавляйте произвольные позиции")
+
+    section_order = st.session_state["section_order"]
+
+    # ── Список разделов с кнопками управления ──
+    for idx, section in enumerate(section_order):
+        col_up, col_down, col_name, col_add, col_del = st.columns([0.5, 0.5, 5, 2.5, 0.7])
+
+        with col_up:
+            if idx > 0:
+                if st.button("▲", key=f"sec_up_{idx}", help="Переместить выше"):
+                    so = st.session_state["section_order"]
+                    so[idx - 1], so[idx] = so[idx], so[idx - 1]
+                    st.rerun()
+
+        with col_down:
+            if idx < len(section_order) - 1:
+                if st.button("▼", key=f"sec_down_{idx}", help="Переместить ниже"):
+                    so = st.session_state["section_order"]
+                    so[idx], so[idx + 1] = so[idx + 1], so[idx]
+                    st.rerun()
+
+        with col_name:
+            # Отмечаем пользовательские разделы
+            is_custom_sec = section not in DEFAULT_SECTION_ORDER
+            label = f"**{section}**" + (" 🟡" if is_custom_sec else "")
+            st.markdown(label)
+
+        with col_add:
+            if st.button(f"➕ Добавить позицию", key=f"btn_add_{idx}", use_container_width=True):
+                if st.session_state["adding_to_section"] == section:
+                    st.session_state["adding_to_section"] = None
+                else:
+                    st.session_state["adding_to_section"] = section
+                st.rerun()
+
+        with col_del:
+            # Удалять можно только пользовательские пустые разделы
+            if is_custom_sec:
+                has_items = any(i["section"] == section for i in st.session_state["custom_items"])
+                if not has_items:
+                    if st.button("🗑", key=f"sec_del_{idx}", help="Удалить раздел"):
+                        st.session_state["section_order"].remove(section)
+                        st.rerun()
+
+        # ── Форма добавления позиции ──
+        if st.session_state["adding_to_section"] == section:
+            with st.container():
+                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;📌 **Новая позиция → {section}**")
+                fc1, fc2, fc3, fc4 = st.columns([3, 1.2, 1.2, 1.5])
+                with fc1:
+                    new_name = st.text_input(
+                        "Название работы", placeholder="Например: Установка стеклянной перегородки",
+                        key=f"inp_name_{section}"
+                    )
+                with fc2:
+                    new_unit = st.text_input("Единица", value="кв.м.", key=f"inp_unit_{section}")
+                with fc3:
+                    new_price = st.number_input(
+                        "Цена за ед., ₽", min_value=0, step=100, key=f"inp_price_{section}"
+                    )
+                with fc4:
+                    new_subsection = st.text_input(
+                        "Подраздел", placeholder="(опционально)", key=f"inp_sub_{section}"
+                    )
+
+                btn_save, btn_cancel = st.columns([1, 1])
+                with btn_save:
+                    if st.button("✅ Сохранить позицию", key=f"save_{section}", type="primary", use_container_width=True):
+                        if new_name.strip():
+                            import uuid
+                            new_item = {
+                                "id": f"custom_{uuid.uuid4().hex[:8]}",
+                                "section": section,
+                                "subsection": new_subsection.strip() or "Пользовательские позиции",
+                                "name": new_name.strip(),
+                                "unit": new_unit.strip() or "шт.",
+                                "works": [{
+                                    "name": new_name.strip(),
+                                    "unit": new_unit.strip() or "шт.",
+                                    "price": int(new_price),
+                                    "norm": 1.0
+                                }],
+                                "materials": [],
+                            }
+                            st.session_state["custom_items"].append(new_item)
+                            st.session_state["adding_to_section"] = None
+                            st.success(f"✅ Позиция «{new_name}» добавлена в «{section}»")
+                            st.rerun()
+                        else:
+                            st.warning("Введите название работы")
+                with btn_cancel:
+                    if st.button("✖ Отмена", key=f"cancel_{section}", use_container_width=True):
+                        st.session_state["adding_to_section"] = None
+                        st.rerun()
+                st.markdown("---")
+
+    # ── Показать текущие пользовательские позиции ──
+    if st.session_state["custom_items"]:
+        with st.expander(f"📋 Мои позиции ({len(st.session_state['custom_items'])} шт.)", expanded=False):
+            for ci_idx, ci in enumerate(st.session_state["custom_items"]):
+                price_show = ci["works"][0]["price"] if ci["works"] else 0
+                cc1, cc2 = st.columns([5, 1])
+                with cc1:
+                    st.write(f"• [{ci['section']} / {ci.get('subsection','')}] **{ci['name']}** — {price_show:,} ₽ / {ci['unit']}")
+                with cc2:
+                    if st.button("🗑", key=f"del_ci_{ci_idx}", help="Удалить позицию"):
+                        st.session_state["custom_items"].pop(ci_idx)
+                        st.rerun()
+
+    st.markdown("---")
+    # ── Создать новый раздел ──
+    st.markdown("**➕ Создать новый раздел:**")
+    ns_col1, ns_col2 = st.columns([4, 1.5])
+    with ns_col1:
+        new_section_name = st.text_input(
+            "Название нового раздела",
+            placeholder="Например: Специальные работы / Благоустройство",
+            key="new_section_name",
+            label_visibility="collapsed",
+        )
+    with ns_col2:
+        if st.button("Создать раздел ➕", type="primary", use_container_width=True):
+            name = new_section_name.strip()
+            if name and name not in st.session_state["section_order"]:
+                st.session_state["section_order"].append(name)
+                st.success(f"Раздел «{name}» создан!")
+                st.rerun()
+            elif name in st.session_state["section_order"]:
+                st.warning("Такой раздел уже существует")
+            else:
+                st.warning("Введите название раздела")
+
+    # ── Сброс к дефолтному порядку ──
+    if st.button("🔄 Сбросить порядок разделов к стандартному", use_container_width=False):
+        st.session_state["section_order"] = list(DEFAULT_SECTION_ORDER)
+        st.rerun()
+
+st.markdown("---")
+
+# ─────────────────────────────────────────────
 # ШАГ 1: ВЫБОР ВИДОВ РАБОТ
 # ─────────────────────────────────────────────
 st.subheader("Шаг 1 — Выберите виды работ")
 st.caption("Ставьте ✓ на разделе → открываются подразделы → ставьте ✓ на нужных позициях")
 
-sections = get_sections(all_items)
+# Используем порядок из session_state, показываем только разделы с позициями
+sections_with_items = [
+    s for s in st.session_state["section_order"]
+    if any(i["section"] == s for i in all_items_combined)
+]
+
 selected_ids = []  # id выбранных позиций
 
-for section in sections:
+for section in sections_with_items:
     sec_key = f"sec_{section}"
     sec_checked = st.checkbox(f"**{section}**", key=sec_key)
 
     if sec_checked:
-        subsections = get_subsections(all_items, section)
-        for subsection in subsections:
-            items_in_sub = get_items(all_items, section, subsection)
+        # Подразделы из объединённого списка
+        subs = []
+        for i in all_items_combined:
+            if i["section"] == section:
+                sub = i.get("subsection") or "Общее"
+                if sub not in subs:
+                    subs.append(sub)
+
+        for subsection in subs:
+            items_in_sub = [
+                i for i in all_items_combined
+                if i["section"] == section and (i.get("subsection") or "Общее") == subsection
+            ]
             with st.expander(f"↳ {subsection}", expanded=True):
                 for item in items_in_sub:
                     iid = item["id"]
-                    # цена = сумма подработ × нормы
                     approx_price = sum(
                         w["price"] * w["norm"]
                         for w in item.get("works", [])
                     )
+                    is_custom = iid.startswith("custom_")
+                    marker = " 🟡" if is_custom else ""
                     label = (
-                        f"{item['name']}"
+                        f"{item['name']}{marker}"
                         f"  —  **{approx_price:,.0f} ₽ / {item['unit']}**"
                     )
                     checked = st.checkbox(label, key=f"item_{iid}")
@@ -107,7 +282,7 @@ for section in sections:
                         selected_ids.append(iid)
 
 # Словарь id → item для быстрого доступа
-item_map = {i["id"]: i for i in all_items}
+item_map = {i["id"]: i for i in all_items_combined}
 selected_items = [item_map[iid] for iid in selected_ids]
 
 st.markdown("---")
@@ -121,15 +296,15 @@ if selected_items:
     st.subheader("Шаг 2 — Введите объёмы работ")
     st.caption("Укажите количество для каждой выбранной позиции")
 
-    # Группируем по разделу для читаемости
     current_section = None
     current_subsection = None
     for item in selected_items:
         if item["section"] != current_section:
             current_section = item["section"]
             st.markdown(f"**{current_section}**")
-        if item["subsection"] != current_subsection:
-            current_subsection = item["subsection"]
+        subsec = item.get("subsection") or "Общее"
+        if subsec != current_subsection:
+            current_subsection = subsec
             st.markdown(f"*{current_subsection}*")
 
         col1, col2 = st.columns([4, 1])
@@ -215,12 +390,10 @@ if selected_items and any(quantities.get(i["id"], 0) > 0 for i in selected_items
     for item in selected_items:
         qty = quantities.get(item["id"], 0)
 
-        # Сумма по всем подработам
         work_sum = sum(
             qty * w.get("norm", 1) * w.get("price", 0)
             for w in item.get("works", [])
         )
-        # Сумма по всем материалам
         mat_sum = sum(
             qty * m.get("norm", 0) * m.get("price", 0)
             for m in item.get("materials", [])
@@ -238,7 +411,6 @@ if selected_items and any(quantities.get(i["id"], 0) > 0 for i in selected_items
             "Итого, ₽": int(work_sum + mat_sum),
         })
 
-    # Дополнительные расходы
     try:
         base_total = total_work + total_mat
         unforeseen = base_total * extra_unforeseen_pct / 100
@@ -250,7 +422,6 @@ if selected_items and any(quantities.get(i["id"], 0) > 0 for i in selected_items
         unforeseen = 0.0
         extra_total = 0.0
 
-    # Финансовый блок
     subtotal = total_work + total_mat + extra_total
     try:
         overhead_sum = subtotal * fin_settings["overhead_pct"] / 100
@@ -262,21 +433,18 @@ if selected_items and any(quantities.get(i["id"], 0) > 0 for i in selected_items
     vat_sum = total_before_vat * 0.20 if (fin_settings.get("vat") if "fin_settings" in dir() else False) else 0.0
     grand_total = total_before_vat + vat_sum
 
-    # Метрики
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Работы", f"{int(total_work):,} ₽".replace(",", " "))
     col2.metric("Материалы", f"{int(total_mat):,} ₽".replace(",", " "))
     col3.metric("Доп. расходы", f"{int(extra_total):,} ₽".replace(",", " "))
     col4.metric("ИТОГО", f"{int(grand_total):,} ₽".replace(",", " "))
 
-    # Таблица превью
     import pandas as pd
     df_preview = pd.DataFrame(rows_preview)
     st.dataframe(df_preview, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
-    # Кнопка генерации
     col1, col2 = st.columns([1, 3])
     with col1:
         if st.button("📥 Сформировать Excel", type="primary", use_container_width=True):
@@ -334,4 +502,4 @@ else:
 # ПОДВАЛ
 # ─────────────────────────────────────────────
 st.markdown("---")
-st.caption("ООО «Ремкон» · Калькулятор КП v1.1 · remkon.ru")
+st.caption("ООО «Ремкон» · Калькулятор КП v1.2 · remkon.ru")
