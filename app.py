@@ -54,6 +54,10 @@ if "custom_items"   not in st.session_state:
     st.session_state["custom_items"]   = []
 if "kp_cart"        not in st.session_state:
     st.session_state["kp_cart"]        = {}   # {item_id: {"item": ..., "qty": float}}
+if "suggest_for"    not in st.session_state:
+    st.session_state["suggest_for"]    = None  # item_id для которого показываем попап
+if "suggest_qty"    not in st.session_state:
+    st.session_state["suggest_qty"]    = {}    # {item_id: qty} для попапа
 if "kp_history"     not in st.session_state:
     hist_path = os.path.join(os.path.dirname(__file__), "kp_history.json")
     try:
@@ -66,15 +70,29 @@ all_items_combined = all_items + st.session_state["custom_items"]
 item_map = {i["id"]: i for i in all_items_combined}
 
 # Вспомогательные функции корзины
-def cart_add(item: dict, qty: float):
+def cart_add(item: dict, qty: float, trigger_suggest: bool = True):
     iid = item["id"]
     if iid in st.session_state["kp_cart"]:
         st.session_state["kp_cart"][iid]["qty"] += qty
     else:
         st.session_state["kp_cart"][iid] = {"item": item, "qty": qty}
+    # Проверяем есть ли цепочки для этой позиции — запускаем попап
+    if trigger_suggest:
+        section = item.get("section", "")
+        if section in CHAINS:
+            chain_matches = find_chain_items(CHAINS[section], all_items_combined)
+            # Оставляем только те которых ещё нет в корзине
+            new_suggestions = [m for m in chain_matches
+                               if m["item"]["id"] != iid
+                               and m["item"]["id"] not in st.session_state["kp_cart"]]
+            if new_suggestions:
+                st.session_state["suggest_for"] = iid
+                st.session_state["suggest_qty"] = qty
 
 def cart_remove(item_id: str):
     st.session_state["kp_cart"].pop(item_id, None)
+    if st.session_state.get("suggest_for") == item_id:
+        st.session_state["suggest_for"] = None
 
 def item_price(item: dict) -> float:
     return sum(w["price"] * w["norm"] for w in item.get("works", []))
@@ -298,6 +316,69 @@ with tab_kp:
                 st.session_state["active_chain"] = None
                 st.rerun()
 
+        # ── Попап сопутствующих работ ────────────────────────────────────
+        suggest_id = st.session_state.get("suggest_for")
+        if suggest_id and suggest_id in st.session_state["kp_cart"]:
+            trigger_item = st.session_state["kp_cart"][suggest_id]["item"]
+            trigger_qty  = st.session_state["suggest_qty"]
+            section      = trigger_item.get("section", "")
+
+            if section in CHAINS:
+                chain_def    = CHAINS[section]
+                chain_matches = find_chain_items(chain_def, all_items_combined)
+                suggestions  = [m for m in chain_matches
+                                if m["item"]["id"] != suggest_id
+                                and m["item"]["id"] not in st.session_state["kp_cart"]]
+
+                if suggestions:
+                    st.markdown("---")
+                    st.markdown(
+                        f"💡 **К «{trigger_item['name']}» обычно добавляют:**"
+                    )
+                    with st.container():
+                        for m in suggestions:
+                            sit   = m["item"]
+                            siid  = sit["id"]
+                            note  = m["note"]
+                            # Предлагаем тот же объём что у основной позиции
+                            s_qty = float(trigger_qty) if trigger_qty else 1.0
+
+                            sc1, sc2, sc3, sc4 = st.columns([0.5, 5, 1.8, 1.5])
+                            with sc1:
+                                add_it = st.checkbox("", value=True, key=f"sug_chk_{siid}")
+                            with sc2:
+                                s_price = item_price(sit)
+                                st.write(f"**{sit['name']}** — {s_price:,.0f} ₽/{sit['unit']}")
+                                st.caption(f"{sit['section']}  {'('+note+')' if note else ''}")
+                            with sc3:
+                                s_qty_in = st.number_input(
+                                    sit["unit"], min_value=0.0, value=s_qty,
+                                    step=1.0, format="%.1f",
+                                    key=f"sug_qty_{siid}",
+                                )
+                            with sc4:
+                                st.write(f"*{s_price * s_qty_in:,.0f} ₽*")
+
+                        scb1, scb2 = st.columns([2, 2])
+                        with scb1:
+                            if st.button("✅ Добавить выбранные", type="primary",
+                                         key="sug_accept", use_container_width=True):
+                                for m in suggestions:
+                                    siid = m["item"]["id"]
+                                    if st.session_state.get(f"sug_chk_{siid}", False):
+                                        q = st.session_state.get(f"sug_qty_{siid}", 1.0)
+                                        cart_add(m["item"], q, trigger_suggest=False)
+                                st.session_state["suggest_for"] = None
+                                st.rerun()
+                        with scb2:
+                            if st.button("Пропустить →", key="sug_skip",
+                                         use_container_width=True):
+                                st.session_state["suggest_for"] = None
+                                st.rerun()
+                    st.markdown("---")
+                else:
+                    st.session_state["suggest_for"] = None
+
         # ── Добавление своей позиции ─────────────────────────────────────
         if st.session_state.get("show_add_custom"):
             st.markdown("---")
@@ -390,12 +471,15 @@ with tab_kp:
                     extra_trash    = st.number_input("Вывоз мусора, ₽",    min_value=0, step=1000, value=0, key="ex_tr")
                     extra_unf_pct  = st.number_input("Непредвиденные, %",  min_value=0, max_value=20, step=1, value=3, key="ex_unf")
                 with e2:
-                    overhead_pct   = st.number_input("Накладные, %",       min_value=0, max_value=50, step=1, value=10, key="fin_oh")
+                    margin_pct     = st.number_input("Маржа на работы, %", min_value=0, max_value=100, step=5, value=30, key="fin_margin", help="25-35% рекомендуемый диапазон. Применяется к работам.")
+                    overhead_pct   = st.number_input("Накладные, %",       min_value=0, max_value=50, step=1, value=5,  key="fin_oh")
                     profit_pct     = st.number_input("Прибыль, %",         min_value=0, max_value=50, step=1, value=5,  key="fin_pr")
-                    vat_on         = st.checkbox("НДС 22%", value=False, key="fin_vat")
+                    profit_pct     = st.number_input("Прибыль, %",         min_value=0, max_value=50, step=1, value=0,  key="fin_pr")
+                    vat_on         = st.checkbox("НДС 22% (безнал)", value=True, key="fin_vat")
 
-            # Финальный расчёт
-            base = total_work + total_mat
+            # Финальный расчёт: маржа на работы, затем накладные+прибыль, затем НДС
+            work_with_margin = total_work * (1 + margin_pct / 100)
+            base = work_with_margin + total_mat
             try:
                 unforeseen   = base * extra_unf_pct / 100
                 extra_total  = extra_delivery + extra_trash + unforeseen
@@ -476,9 +560,100 @@ with tab_kp:
                     )
 
             st.markdown("---")
+
+            # ── Прораб-агент ─────────────────────────────────────────────
+            if st.button("🔍 Проверить КП прорабом", use_container_width=True,
+                         key="foreman_check", type="secondary"):
+                api_key = st.secrets.get("ANTHROPIC_API_KEY",
+                           os.environ.get("ANTHROPIC_API_KEY", ""))
+                if not api_key:
+                    st.warning("Нет ANTHROPIC_API_KEY")
+                else:
+                    with st.spinner("Прораб изучает КП… (~15 сек)"):
+                        from foreman import review_kp
+                        try:
+                            report = review_kp(
+                                cart=cart,
+                                obj_name=st.session_state.get("kp_obj", ""),
+                                area=st.session_state.get("kp_area", 0),
+                                api_key=api_key,
+                            )
+                            st.session_state["foreman_report"] = report
+                        except Exception as e:
+                            st.error(f"Ошибка прораба: {e}")
+
+            # ── Отчёт прораба ─────────────────────────────────────────────
+            report = st.session_state.get("foreman_report")
+            if report:
+                verdict = report.get("verdict", "")
+                summary = report.get("summary", "")
+
+                # Цвет по вердикту
+                if "✅" in verdict:
+                    st.success(f"**{verdict}**  \n{summary}")
+                elif "❌" in verdict:
+                    st.error(f"**{verdict}**  \n{summary}")
+                else:
+                    st.warning(f"**{verdict}**  \n{summary}")
+
+                # Неясные позиции
+                unclear = report.get("unclear_positions", [])
+                if unclear:
+                    with st.expander(f"❓ Неясные позиции ({len(unclear)}) — уточни у заказчика",
+                                     expanded=True):
+                        for u in unclear:
+                            st.markdown(f"**{u.get('name', '')}**")
+                            st.markdown(f"🔸 *Проблема:* {u.get('issue', '')}")
+                            st.markdown(f"📋 *Уточнить:* {u.get('clarification_needed', '')}")
+                            if u.get("risk"):
+                                st.caption(f"⚠️ Риск: {u['risk']}")
+                            st.markdown("---")
+
+                # Недостающие позиции
+                missing = report.get("missing_items", [])
+                if missing:
+                    with st.expander(f"🔴 Не хватает позиций ({len(missing)})",
+                                     expanded=True):
+                        for m in missing:
+                            st.markdown(f"**{m.get('missing', '')}**")
+                            st.markdown(f"📌 *Причина:* {m.get('reason', '')}")
+                            st.caption(
+                                f"Вызвано: {m.get('triggered_by', '')}  "
+                                f"{'· Норма: ' + m['approx_norm'] if m.get('approx_norm') else ''}"
+                            )
+                            st.markdown("---")
+
+                # Ценовые риски
+                price_risks = report.get("price_risks", [])
+                if price_risks:
+                    with st.expander(f"💰 Ценовые риски ({len(price_risks)})",
+                                     expanded=False):
+                        for pr in price_risks:
+                            vrdt = pr.get("verdict", "")
+                            icon = "✅" if "✅" in vrdt else ("❌" if "❌" in vrdt else "⚠️")
+                            st.markdown(
+                                f"{icon} **{pr.get('name','')}** — "
+                                f"{pr.get('our_price',0):,} ₽/{pr.get('unit','')} × "
+                                f"{pr.get('qty',0)} = **{pr.get('total',0):,} ₽**"
+                            )
+                            st.caption(pr.get("market_comment", ""))
+
+                # Общие замечания прораба
+                notes = report.get("foreman_notes", [])
+                if notes:
+                    with st.expander("📝 Замечания прораба", expanded=False):
+                        for note in notes:
+                            st.markdown(f"• {note}")
+
+                if st.button("✖ Закрыть отчёт", key="close_report"):
+                    st.session_state["foreman_report"] = None
+                    st.rerun()
+
+            st.markdown("---")
             if st.button("🗑 Очистить КП", use_container_width=True, key="clear_cart"):
                 st.session_state["kp_cart"] = {}
                 st.session_state["excel_ready"] = False
+                st.session_state["foreman_report"] = None
                 st.rerun()
 
         else:
@@ -537,36 +712,322 @@ with tab_kp:
 # TAB 2 — AI-РАЗБОР ТЗ
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_tz:
-    st.subheader("🤖 Загрузить ТЗ — AI разберёт и перенесёт в КП")
-    st.caption("Форматы: Excel (.xlsx), PDF, Word (.docx)")
-
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
-
-    uploaded = st.file_uploader(
-        "Перетащите файл ТЗ",
-        type=["xlsx", "xls", "pdf", "docx"],
-        key="tz_file",
+    st.subheader("🤖 Разбор ТЗ — два этапа: AI → проверка человека → финальный состав")
+    st.caption(
+        "Этап 1: AI автоматически разбирает ТЗ и подбирает позиции  |  "
+        "Этап 2: вы расставляете галочки, пишете правки → система перестраивает состав"
     )
 
-    if uploaded and api_key:
-        if st.button("🚀 Запустить AI-разбор", type="primary"):
-            with st.spinner("Читаю документ и ищу позиции…"):
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
+    gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+
+    # ── Инициализация state для TZ review ───────────────────────────────────
+    if "tz_review" not in st.session_state:
+        st.session_state["tz_review"] = None   # список позиций после AI
+    if "tz_review_final" not in st.session_state:
+        st.session_state["tz_review_final"] = None  # после применения правок
+
+    # ══════════════════════════════════════════
+    # ЭТАП 1: Загрузка и AI-разбор
+    # ══════════════════════════════════════════
+    if st.session_state["tz_review"] is None:
+        uploaded = st.file_uploader(
+            "Загрузите ТЗ (Excel, PDF, Word)",
+            type=["xlsx", "xls", "pdf", "docx"],
+            key="tz_file",
+        )
+
+        if uploaded and api_key:
+            if st.button("🚀 Запустить AI-разбор", type="primary", use_container_width=True):
                 try:
                     from ai_parser import extract_text, call_claude_api, match_items
                     raw_text = extract_text(uploaded.read(), uploaded.name)
                     if not raw_text.strip():
-                        st.error("Не удалось извлечь текст.")
+                        st.error("Не удалось извлечь текст из файла.")
                     else:
-                        parsed  = call_claude_api(raw_text, api_key)
-                        matched = match_items(parsed, all_items_combined)
-                        st.session_state["tz_matched"] = matched
-                        st.success(f"AI извлёк {len(parsed)} позиций. Проверьте ниже.")
-                except json.JSONDecodeError:
-                    st.error("AI вернул некорректный JSON. Попробуйте ещё раз.")
+                        prog = st.progress(0, text="Читаю документ…")
+                        parsed = call_claude_api(raw_text, api_key)
+                        prog.progress(40, text=f"Извлечено {len(parsed)} позиций, ищу в справочнике…")
+                        matched = match_items(parsed, all_items_combined, api_key)
+                        prog.progress(100, text="Готово!")
+
+                        # Строим review-состояние
+                        review = []
+                        for i, m in enumerate(matched):
+                            review.append({
+                                "idx":         i,
+                                "parsed_name": m["parsed_name"],
+                                "parsed_unit": m["parsed_unit"],
+                                "qty":         m.get("qty") or 0.0,
+                                "matched_item": m.get("matched_item"),
+                                "matched_id":  m.get("matched_id"),
+                                "confidence":  m.get("confidence", 0.0),
+                                "comment":     m.get("comment", ""),
+                                "in_catalog":  m.get("in_catalog", False),
+                                "include":     True,
+                                "user_comment": "",
+                                "status":      "ai_matched",  # ai_matched | unchanged | modified | added | removed
+                            })
+
+                        not_found = sum(1 for r in review if not r["in_catalog"])
+                        st.session_state["tz_review"] = review
+                        st.success(
+                            f"✅ AI разобрал ТЗ: {len(review)} позиций  ·  "
+                            f"В справочнике: {len(review)-not_found}  ·  "
+                            f"Не найдено: {not_found}"
+                        )
+                        st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка: {e}")
-    elif not uploaded:
-        st.info("Загрузите файл ТЗ")
+        elif not uploaded:
+            st.info("Загрузите файл ТЗ чтобы начать")
+
+    # ══════════════════════════════════════════
+    # ЭТАП 2: Проверка человека + применение правок
+    # ══════════════════════════════════════════
+    else:
+        # Определяем какой список показывать: финальный или первичный
+        display_list = st.session_state["tz_review_final"] or st.session_state["tz_review"]
+        is_final = st.session_state["tz_review_final"] is not None
+
+        # Шапка этапа
+        col_hd1, col_hd2, col_hd3 = st.columns([4, 2, 2])
+        with col_hd1:
+            if is_final:
+                st.markdown("### ✅ Состав КП после правок")
+                changed_count = sum(1 for r in display_list if r.get("status") in ("modified", "added", "removed"))
+                if changed_count:
+                    st.caption(f"🟠 Изменено/добавлено/убрано: {changed_count} позиций")
+            else:
+                st.markdown("### Этап 2 — Проверьте и откорректируйте")
+                st.caption("Снимите галочку чтобы исключить · Напишите комментарий чтобы изменить · Допишите по разделу")
+        with col_hd2:
+            if st.button("🔄 Загрузить новый ТЗ", use_container_width=True):
+                st.session_state["tz_review"] = None
+                st.session_state["tz_review_final"] = None
+                st.rerun()
+        with col_hd3:
+            if is_final:
+                if st.button("✏️ Вернуться к правкам", use_container_width=True):
+                    st.session_state["tz_review_final"] = None
+                    st.rerun()
+
+        st.markdown("---")
+
+        # ── Таблица позиций ─────────────────────────────────────────────
+        # Сбор section_comments
+        section_comments: dict[str, str] = {}
+        seen_sections: list[str] = []
+
+        for row in display_list:
+            sec = row["matched_item"]["section"] if row.get("matched_item") else "Не в справочнике"
+            if sec not in seen_sections:
+                seen_sections.append(sec)
+
+        # Группировка по разделам
+        from collections import defaultdict
+        by_section: dict[str, list] = defaultdict(list)
+        for row in display_list:
+            sec = row["matched_item"]["section"] if row.get("matched_item") else "⚠️ Не найдено в справочнике"
+            by_section[sec].append(row)
+
+        for sec, rows in by_section.items():
+            # Заголовок раздела
+            sec_hd, sec_comment_col = st.columns([3, 3])
+            with sec_hd:
+                st.markdown(f"**{sec}**")
+            with sec_comment_col:
+                if not is_final:
+                    sc = st.text_input(
+                        f"Добавить к разделу «{sec}»:",
+                        placeholder="Напр: добавить грунтовку и деформационные швы",
+                        key=f"sec_comment_{sec}",
+                        label_visibility="collapsed",
+                    )
+                    if sc:
+                        section_comments[sec] = sc
+                else:
+                    st.caption("")
+
+            for row in rows:
+                idx    = row["idx"]
+                status = row.get("status", "ai_matched")
+                conf   = row.get("confidence", 0.0)
+                inc    = row.get("include", True)
+
+                # Цвет строки по статусу
+                if status == "removed" or not inc:
+                    row_color = "🔴"
+                elif status == "added":
+                    row_color = "🟠"
+                elif status == "modified":
+                    row_color = "🟠"
+                elif conf >= 0.6:
+                    row_color = "🟢"
+                elif conf >= 0.35:
+                    row_color = "🟡"
+                else:
+                    row_color = "🔴"
+
+                # Оранжевый фон для изменённых (финальный список)
+                if is_final and status in ("modified", "added"):
+                    st.markdown(
+                        f'<div style="background:#FF8C0020;border-left:3px solid #FF8C00;'
+                        f'padding:4px 8px;border-radius:4px;margin:2px 0">',
+                        unsafe_allow_html=True,
+                    )
+
+                rc1, rc2, rc3, rc4, rc5 = st.columns([0.5, 4, 3, 1.5, 2.5])
+
+                with rc1:
+                    if not is_final:
+                        new_inc = st.checkbox("", value=inc, key=f"tz_inc_{idx}")
+                        if new_inc != inc:
+                            st.session_state["tz_review"][idx]["include"] = new_inc
+                    else:
+                        st.markdown("❌" if status == "removed" else ("🟠" if status in ("modified","added") else "✅"))
+
+                with rc2:
+                    if status == "added":
+                        st.markdown(f"{row_color} **{row.get('parsed_name', row.get('name',''))}** *(добавлено)*")
+                    elif status == "removed":
+                        st.markdown(f"~~{row.get('parsed_name','')}~~ *(убрано)*")
+                    else:
+                        st.markdown(f"{row_color} **{row.get('parsed_name', '')}**")
+                    if row.get("matched_item"):
+                        st.caption(f"→ {row['matched_item']['name']}")
+                    elif not row.get("in_catalog") and not is_final:
+                        # Кнопка добавить в справочник
+                        if st.button("➕ В справочник", key=f"tz_learn_{idx}"):
+                            st.session_state[f"learn_open_{idx}"] = True
+                        if st.session_state.get(f"learn_open_{idx}"):
+                            lc1, lc2 = st.columns(2)
+                            with lc1:
+                                lsec = st.selectbox("Раздел", st.session_state["section_order"], key=f"ls_{idx}", label_visibility="collapsed")
+                            with lc2:
+                                lprice = st.number_input("Цена ₽", min_value=0, step=100, key=f"lp_{idx}", label_visibility="collapsed")
+                            if st.button("Сохранить", key=f"lsave_{idx}", type="primary"):
+                                from ai_parser import save_to_catalog
+                                ni = save_to_catalog(row["parsed_name"], row["parsed_unit"], lprice, lsec, "Из ТЗ")
+                                st.session_state["custom_items"].append(ni)
+                                st.session_state["tz_review"][idx]["matched_item"] = ni
+                                st.session_state["tz_review"][idx]["matched_id"] = ni["id"]
+                                st.session_state["tz_review"][idx]["in_catalog"] = True
+                                st.session_state[f"learn_open_{idx}"] = False
+                                st.rerun()
+
+                with rc3:
+                    if not is_final:
+                        uc = st.text_input(
+                            "Комментарий",
+                            value=row.get("user_comment", ""),
+                            placeholder="изменить объём / уточнить / убрать…",
+                            key=f"tz_uc_{idx}",
+                            label_visibility="collapsed",
+                        )
+                        if uc != row.get("user_comment", ""):
+                            st.session_state["tz_review"][idx]["user_comment"] = uc
+                    else:
+                        if row.get("change_note"):
+                            st.caption(f"🟠 {row['change_note']}")
+
+                with rc4:
+                    qty_val = float(row.get("qty") or 0)
+                    unit_label = (row["matched_item"]["unit"] if row.get("matched_item") else row.get("parsed_unit", "ед."))
+                    if not is_final:
+                        new_qty = st.number_input(
+                            unit_label, min_value=0.0, value=qty_val, step=0.5,
+                            format="%.2f", key=f"tz_qty_{idx}", label_visibility="visible",
+                        )
+                        if abs(new_qty - qty_val) > 0.001:
+                            st.session_state["tz_review"][idx]["qty"] = new_qty
+                    else:
+                        st.markdown(f"**{qty_val:.1f}** {unit_label}")
+
+                with rc5:
+                    if is_final and status != "removed":
+                        it = row.get("matched_item")
+                        if it:
+                            iid = it["id"]
+                            in_cart = iid in st.session_state["kp_cart"]
+                            if in_cart:
+                                st.markdown("✅ в КП")
+                            else:
+                                if st.button("➕ В КП", key=f"tz_final_add_{idx}", use_container_width=True, type="primary"):
+                                    cart_add(it, float(row.get("qty") or 0))
+                                    st.rerun()
+                    elif is_final and gemini_key and not row.get("matched_item"):
+                        if st.button("🔍 Цену Gemini", key=f"tz_gem_{idx}", use_container_width=True):
+                            from ai_parser import get_market_price
+                            pd2 = get_market_price(row["parsed_name"], row["parsed_unit"], gemini_key)
+                            st.session_state[f"mp_{idx}"] = pd2
+                        if st.session_state.get(f"mp_{idx}"):
+                            pd2 = st.session_state[f"mp_{idx}"]
+                            st.caption(f"💰 ср. {pd2['price_mid']:,} ₽")
+
+                if is_final and status in ("modified", "added"):
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+            st.markdown("")  # отступ между разделами
+
+        st.markdown("---")
+
+        # ── Кнопки действий ─────────────────────────────────────────────
+        if not is_final:
+            ac1, ac2 = st.columns(2)
+            with ac1:
+                if st.button("🔄 Применить правки (Claude переработает)", type="primary",
+                             use_container_width=True, key="tz_reprocess"):
+                    review = st.session_state["tz_review"]
+                    has_edits = any(
+                        not r.get("include", True) or r.get("user_comment", "").strip()
+                        for r in review
+                    ) or any(v.strip() for v in section_comments.values())
+
+                    if not has_edits:
+                        st.info("Правок нет — состав не изменился.")
+                    else:
+                        with st.spinner("Claude применяет ваши правки…"):
+                            from ai_parser import reprocess_with_edits
+                            # Синхронизируем user_comment из виджетов
+                            for r in review:
+                                r["user_comment"] = st.session_state.get(
+                                    f"tz_uc_{r['idx']}", r.get("user_comment", ""))
+                                r["include"] = st.session_state.get(
+                                    f"tz_inc_{r['idx']}", r.get("include", True))
+                                r["qty"] = st.session_state.get(
+                                    f"tz_qty_{r['idx']}", r.get("qty", 0))
+                            # Собираем section_comments из виджетов
+                            sc_final = {}
+                            for sec in by_section:
+                                sc_val = st.session_state.get(f"sec_comment_{sec}", "")
+                                if sc_val:
+                                    sc_final[sec] = sc_val
+                            final = reprocess_with_edits(review, sc_final, all_items_combined, api_key)
+                        st.session_state["tz_review_final"] = final
+                        st.rerun()
+
+            with ac2:
+                if st.button("✅ Принять как есть → все в КП", use_container_width=True, key="tz_accept_all"):
+                    for row in display_list:
+                        if row.get("include", True) and row.get("matched_item"):
+                            cart_add(row["matched_item"], float(row.get("qty") or 0))
+                    st.session_state["tz_review"] = None
+                    st.session_state["tz_review_final"] = None
+                    st.success("Перенесено в КП! Перейдите на вкладку 📝")
+                    st.rerun()
+
+        else:
+            # Финальный список: кнопка "Добавить всё в КП"
+            if st.button("✅ Добавить весь финальный состав в КП", type="primary",
+                         use_container_width=True, key="tz_final_all"):
+                for row in display_list:
+                    if row.get("status") != "removed" and row.get("matched_item"):
+                        cart_add(row["matched_item"], float(row.get("qty") or 0))
+                st.session_state["tz_review"] = None
+                st.session_state["tz_review_final"] = None
+                st.success("Всё перенесено в КП!")
+                st.rerun()
 
     if st.session_state.get("tz_matched"):
         matched = st.session_state["tz_matched"]
@@ -590,12 +1051,65 @@ with tab_tz:
             with mc3:
                 if m["matched_item"]:
                     st.write(f"→ {m['matched_item']['name']}")
-                    st.caption(f"{m['matched_item']['section']} | score: {score}")
+                    st.caption(f"{m['matched_item']['section']} · {m.get('comment','')}")
                 else:
-                    st.write("→ *нет в справочнике*")
-                # Возможность заменить матч
-                override_names = ["— оставить —"] + [i["name"] for i in all_items_combined[:200]]
-                override = st.selectbox("", override_names, key=f"tz_ov_{idx}",
+                    st.markdown("⚠️ **Нет в справочнике**")
+                    # Кнопка поиска рыночной цены через Gemini
+                    gemini_key = st.secrets.get("GEMINI_API_KEY",
+                                  os.environ.get("GEMINI_API_KEY", ""))
+                    if gemini_key:
+                        if st.button("🔍 Найти цену (Gemini)",
+                                     key=f"gemini_{idx}", use_container_width=True):
+                            from ai_parser import get_market_price
+                            with st.spinner("Ищу рыночную цену…"):
+                                price_data = get_market_price(
+                                    m["parsed_name"], m["parsed_unit"], gemini_key
+                                )
+                            st.session_state[f"market_price_{idx}"] = price_data
+                    if st.session_state.get(f"market_price_{idx}"):
+                        pd = st.session_state[f"market_price_{idx}"]
+                        st.caption(
+                            f"💰 {pd['price_min']:,}–{pd['price_max']:,} ₽ "
+                            f"(ср. {pd['price_mid']:,} ₽) · {pd['source']}"
+                        )
+                    # Кнопка "Добавить в справочник"
+                    if st.button("➕ Добавить в справочник", key=f"learn_{idx}",
+                                 use_container_width=True):
+                        st.session_state[f"learn_open_{idx}"] = True
+
+                    if st.session_state.get(f"learn_open_{idx}"):
+                        pd = st.session_state.get(f"market_price_{idx}", {})
+                        default_price = pd.get("price_mid", 0)
+                        lc1, lc2 = st.columns(2)
+                        with lc1:
+                            learn_sec = st.selectbox(
+                                "Раздел", st.session_state["section_order"],
+                                key=f"learn_sec_{idx}", label_visibility="collapsed"
+                            )
+                        with lc2:
+                            learn_price = st.number_input(
+                                "Цена ₽/ед.", min_value=0, value=int(default_price),
+                                step=100, key=f"learn_price_{idx}",
+                                label_visibility="collapsed"
+                            )
+                        if st.button("✅ Сохранить в справочник",
+                                     key=f"learn_save_{idx}", type="primary"):
+                            from ai_parser import save_to_catalog
+                            new_item = save_to_catalog(
+                                name=m["parsed_name"], unit=m["parsed_unit"],
+                                price=learn_price, section=learn_sec,
+                                subsection="Добавлено из ТЗ",
+                            )
+                            st.session_state["custom_items"].append(new_item)
+                            all_items_combined = all_items + st.session_state["custom_items"]
+                            iid = new_item["id"]
+                            st.session_state[f"learn_open_{idx}"] = False
+                            st.success(f"Сохранено! Теперь будет найдено автоматически.")
+                            st.rerun()
+
+                # Возможность заменить матч вручную
+                override_names = ["— оставить —"] + [i["name"] for i in all_items_combined[:300]]
+                override = st.selectbox("Заменить →", override_names, key=f"tz_ov_{idx}",
                                         label_visibility="collapsed")
                 if override != "— оставить —":
                     iid = next((i["id"] for i in all_items_combined if i["name"] == override), iid)
