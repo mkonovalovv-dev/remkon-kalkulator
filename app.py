@@ -461,6 +461,147 @@ with tab_kp:
                         cart_remove(iid)
                         st.rerun()
 
+                # ── Блок материалов ──────────────────────────────────────────
+                mat_key  = f"mat_{iid}"
+                chat_key = f"mat_chat_{iid}"
+                if mat_key not in st.session_state:
+                    st.session_state[mat_key] = []   # выбранные материалы
+                if chat_key not in st.session_state:
+                    st.session_state[chat_key] = []  # история диалога
+
+                with st.expander(f"📦 Материалы к «{it['name'][:35]}…»" if len(it['name'])>35
+                                 else f"📦 Материалы к «{it['name']}»", expanded=False):
+
+                    mat_api = st.secrets.get("ANTHROPIC_API_KEY",
+                               os.environ.get("ANTHROPIC_API_KEY", ""))
+                    mat_markup = st.number_input(
+                        "Наценка на материалы, %", min_value=0, max_value=100,
+                        step=5, value=20, key=f"mat_markup_{iid}",
+                        help="Скрытая наценка: клиент видит рыночную цену, разница — ваша маржа",
+                    )
+
+                    # Показываем историю диалога
+                    for msg in st.session_state[chat_key]:
+                        role = msg["role"]
+                        if role == "user":
+                            st.markdown(f"👤 *{msg['text']}*")
+                        else:
+                            st.markdown(f"🔧 {msg['text']}")
+
+                    # Показываем текущий список материалов
+                    cur_mats = st.session_state[mat_key]
+                    if cur_mats:
+                        st.markdown("**Выбранные материалы:**")
+                        mat_total_client = 0
+                        for mi, m in enumerate(cur_mats):
+                            qty_m  = m.get("qty_total", 0)
+                            cp     = m.get("client_price", 0)
+                            pp     = m.get("purchase_price", 0)
+                            # Применяем наценку если цена не из каталога
+                            if cp == 0 and pp > 0:
+                                cp = int(pp * (1 + mat_markup / 100))
+                                st.session_state[mat_key][mi]["client_price"] = cp
+                            total_m = int(cp * qty_m)
+                            mat_total_client += total_m
+
+                            mc1, mc2, mc3, mc4, mc5 = st.columns([3.5, 2, 1, 1.5, 0.5])
+                            with mc1:
+                                st.write(f"**{m.get('brand', m.get('name',''))}**")
+                                st.caption(m.get("name", ""))
+                            with mc2:
+                                new_qty_m = st.number_input(
+                                    m.get("unit", "ед."),
+                                    min_value=0.0, value=float(qty_m),
+                                    step=0.5, format="%.2f",
+                                    key=f"mat_qty_{iid}_{mi}",
+                                    label_visibility="visible",
+                                )
+                                if abs(new_qty_m - qty_m) > 0.001:
+                                    st.session_state[mat_key][mi]["qty_total"] = new_qty_m
+                                    st.rerun()
+                            with mc3:
+                                v_opts = ["эконом", "стандарт", "премиум"]
+                                cur_v  = m.get("variant", "стандарт")
+                                v_idx  = v_opts.index(cur_v) if cur_v in v_opts else 1
+                                new_v  = st.selectbox("", v_opts, index=v_idx,
+                                                      key=f"mat_var_{iid}_{mi}",
+                                                      label_visibility="collapsed")
+                                if new_v != cur_v:
+                                    # Подтягиваем цену из каталога
+                                    from materials_agent import MATERIAL_CATALOG
+                                    mkey = m.get("key", "")
+                                    if mkey in MATERIAL_CATALOG and new_v in MATERIAL_CATALOG[mkey]["variants"]:
+                                        vdata = MATERIAL_CATALOG[mkey]["variants"][new_v]
+                                        st.session_state[mat_key][mi]["variant"]        = new_v
+                                        st.session_state[mat_key][mi]["brand"]          = vdata["brand"]
+                                        st.session_state[mat_key][mi]["purchase_price"] = vdata["purchase"]
+                                        st.session_state[mat_key][mi]["client_price"]   = vdata["client"]
+                                    else:
+                                        st.session_state[mat_key][mi]["variant"] = new_v
+                                    st.rerun()
+                            with mc4:
+                                st.write(f"**{total_m:,} ₽**".replace(",", " "))
+                                st.caption(f"за клиента")
+                            with mc5:
+                                if st.button("✖", key=f"mat_rm_{iid}_{mi}"):
+                                    st.session_state[mat_key].pop(mi)
+                                    st.rerun()
+
+                        st.markdown(f"**Итого материалы: {mat_total_client:,} ₽**".replace(",", " "))
+                        st.markdown("---")
+
+                    # Поле для ввода пользователя
+                    user_mat_input = st.text_input(
+                        "Напишите что нужно добавить или изменить",
+                        placeholder="ГКЛ Кнауф в 2 слоя, каркас, утеплитель…",
+                        key=f"mat_input_{iid}",
+                    )
+                    col_mat1, col_mat2 = st.columns([3, 1])
+                    with col_mat1:
+                        if st.button("🔧 Подобрать материалы", key=f"mat_ask_{iid}",
+                                     type="primary", use_container_width=True):
+                            if user_mat_input.strip() and mat_api:
+                                from materials_agent import suggest_materials
+                                with st.spinner("Прораб подбирает материалы…"):
+                                    result = suggest_materials(
+                                        work_name=it["name"],
+                                        work_qty=float(qty),
+                                        work_unit=it["unit"],
+                                        existing_materials=st.session_state[mat_key],
+                                        user_message=user_mat_input.strip(),
+                                        api_key=mat_api,
+                                    )
+                                # Добавляем в историю
+                                st.session_state[chat_key].append(
+                                    {"role": "user", "text": user_mat_input.strip()}
+                                )
+                                # Добавляем новые материалы (без дублей)
+                                existing_names = {m.get("name","") for m in st.session_state[mat_key]}
+                                for new_m in result.get("materials", []):
+                                    if new_m.get("name") not in existing_names:
+                                        # Применяем наценку если нет цены
+                                        if new_m.get("client_price", 0) == 0 and new_m.get("purchase_price", 0) > 0:
+                                            new_m["client_price"] = int(
+                                                new_m["purchase_price"] * (1 + mat_markup / 100)
+                                            )
+                                        st.session_state[mat_key].append(new_m)
+                                        existing_names.add(new_m.get("name",""))
+                                # Ответ агента
+                                agent_reply = result.get("agent_comment", "")
+                                q = result.get("clarifying_question")
+                                if q:
+                                    agent_reply += f"\n\n❓ **{q}**"
+                                if agent_reply:
+                                    st.session_state[chat_key].append(
+                                        {"role": "agent", "text": agent_reply}
+                                    )
+                                st.rerun()
+                    with col_mat2:
+                        if st.button("🗑 Очистить", key=f"mat_clear_{iid}", use_container_width=True):
+                            st.session_state[mat_key] = []
+                            st.session_state[chat_key] = []
+                            st.rerun()
+
             st.markdown("---")
 
             # Финансовые параметры
@@ -473,7 +614,6 @@ with tab_kp:
                 with e2:
                     margin_pct     = st.number_input("Маржа на работы, %", min_value=0, max_value=100, step=5, value=30, key="fin_margin", help="25-35% рекомендуемый диапазон. Применяется к работам.")
                     overhead_pct   = st.number_input("Накладные, %",       min_value=0, max_value=50, step=1, value=5,  key="fin_oh")
-                    profit_pct     = st.number_input("Прибыль, %",         min_value=0, max_value=50, step=1, value=5,  key="fin_pr")
                     profit_pct     = st.number_input("Прибыль, %",         min_value=0, max_value=50, step=1, value=0,  key="fin_pr")
                     vat_on         = st.checkbox("НДС 22% (безнал)", value=True, key="fin_vat")
 
