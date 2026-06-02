@@ -86,8 +86,8 @@ def extract_works_from_tz(text: str, api_key: str) -> list[dict]:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=4096,
+        model="claude-sonnet-4-6",
+        max_tokens=8000,
         system=EXTRACT_SYSTEM,
         messages=[{"role": "user", "content": f"Извлеки работы:\n\n{text[:14000]}"}],
     )
@@ -355,7 +355,7 @@ def reprocess_with_edits(
     # Собираем текст правок
     edits_lines = []
     for p in positions:
-        comment = (p.get("comment") or "").strip()
+        comment = (p.get("user_comment") or "").strip()  # правка менеджера
         include = p.get("include", True)
         if not include:
             edits_lines.append(f"Позиция {p['idx']} ({p.get('parsed_name', p.get('name', '?'))}): НЕ ВКЛЮЧАТЬ")

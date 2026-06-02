@@ -1108,11 +1108,34 @@ with tab_tz:
                         if not raw_text.strip():
                             st.error("Не удалось извлечь текст из файла.")
                         else:
-                            prog = st.progress(0, text="Читаю документ…")
+                            # ── Пошаговый прогресс ──
+                            prog_box = st.empty()
+                            def show_step(step, total, emoji, title, detail=""):
+                                pct = int(step / total * 100)
+                                prog_box.markdown(f"""
+<div style="background:white;border:1px solid #E2E8F0;border-radius:14px;padding:20px 24px;margin:8px 0">
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+    <div style="font-size:28px;line-height:1">{emoji}</div>
+    <div>
+      <div style="font-weight:700;font-size:15px;color:#0F172A">{title}</div>
+      <div style="font-size:13px;color:#64748B;margin-top:2px">{detail}</div>
+    </div>
+    <div style="margin-left:auto;font-size:13px;font-weight:700;color:#1D4ED8">{pct}%</div>
+  </div>
+  <div style="background:#E2E8F0;border-radius:999px;height:8px;overflow:hidden">
+    <div style="background:linear-gradient(90deg,#1D4ED8,#3B82F6);width:{pct}%;height:8px;border-radius:999px"></div>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+    {''.join(f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;background:{"#DCFCE7;color:#166534" if i<step else ("#DBEAFE;color:#1E40AF" if i==step else "#F1F5F9;color:#94A3B8")};font-weight:600">{s}</span>' for i,s in enumerate(["Читаю файл","Извлекаю работы","Ищу в справочнике","Готово"]))}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                            show_step(1, 4, "📂", "Читаю документ…", f"{uploaded.name}")
                             parsed = call_claude_api(raw_text, api_key)
-                            prog.progress(40, text=f"Извлечено {len(parsed)} позиций, ищу соответствия…")
+                            show_step(2, 4, "🤖", "Извлекаю виды работ…", f"Claude Sonnet анализирует текст ТЗ")
                             matched = match_items(parsed, all_items_combined, api_key)
-                            prog.progress(100, text="Готово!")
+                            show_step(3, 4, "🔍", "Сопоставляю со справочником…", f"Найдено {len(parsed)} позиций")
+                            show_step(4, 4, "✅", "Разбор завершён!", f"Проверьте результат ниже")
 
                             review = []
                             for i, m in enumerate(matched):
