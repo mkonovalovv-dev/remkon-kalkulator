@@ -649,8 +649,31 @@ with tab_kp:
                             "Вывоз мусора":           extra_trash,
                             f"Непредвиденные ({extra_unf_pct}%)": int(unforeseen),
                         }
-                        selected_items_ex = [e["item"] for e in cart.values()]
-                        quantities_ex     = {iid: e["qty"] for iid, e in cart.items()}
+                        # Подмешиваем материалы от агента (клиентские цены, без закупочных)
+                        import copy
+                        selected_items_ex = []
+                        for iid2, e2 in cart.items():
+                            item_copy = copy.deepcopy(e2["item"])
+                            work_qty2 = e2["qty"]
+                            agent_mats = st.session_state.get(f"mat_{iid2}", [])
+                            if agent_mats:
+                                # Конвертируем в формат справочника: price = client_price
+                                converted = []
+                                for am in agent_mats:
+                                    cp  = am.get("client_price", 0)
+                                    qty_m = am.get("qty_total", 0)
+                                    norm = round(qty_m / work_qty2, 4) if work_qty2 > 0 else 0
+                                    converted.append({
+                                        "name":  f"{am.get('brand', am.get('name',''))} ({am.get('name','')})",
+                                        "unit":  am.get("unit", "шт."),
+                                        "norm":  norm,
+                                        "price": cp,
+                                    })
+                                item_copy["materials"] = converted
+                            selected_items_ex.append(item_copy)
+                        quantities_ex = {iid: e["qty"] for iid, e in cart.items()}
+
+                        fin_settings["margin_pct"] = int(margin_pct)
 
                         excel_bytes = generate_excel(
                             client=client, address=address, obj_name=obj_name,

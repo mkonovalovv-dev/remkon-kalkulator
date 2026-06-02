@@ -274,13 +274,22 @@ def _build_smeta(ws, client, obj_name, proj_date,
     e_sum = ("=SUM(" + "+".join(f"I{er}" for er in extra_rows) + ")"
              if extra_rows else 0)
 
+    margin_pct = fin.get("margin_pct", 0)
     fin_block = [
-        ("Итого работы:", gw_sum,          _C["tot_bg"],  "000000"),
-        ("Итого материалы:", gm_sum,        _C["tot_bg"],  "000000"),
-        ("Итого работы + материалы:", f"=I{r}+I{r+1}", _C["tot_bg"], "000000"),
-        ("Дополнительные расходы:", e_sum,  _C["extra_bg"],"000000"),
+        ("Итого работы (себестоимость):", gw_sum, _C["tot_bg"], "000000"),
+    ]
+    if margin_pct > 0:
+        fin_block.append((f"Маржа на работы ({margin_pct}%):",
+                          f"=I{r}*{margin_pct}/100", _C["info_bg"], "000000"))
+        fin_block.append(("Итого работы с маржей:", f"=I{r}+I{r+1}",
+                          _C["tot_bg"], "000000"))
+    fin_block += [
+        ("Итого материалы:", gm_sum, _C["tot_bg"], "000000"),
+        ("Итого работы + материалы:", "", _C["tot_bg"], "000000"),
+        ("Дополнительные расходы:", e_sum, _C["extra_bg"], "000000"),
     ]
     overhead_row = profit_row = base_row = None
+    work_sum_row = work_margin_row = work_total_row = None
     for label, val, bg, fg in fin_block:
         ws.merge_cells(f"A{r}:H{r}")
         _cell(ws, r, 1, label, bold=True, color=fg, size=10, bg=bg,
@@ -292,8 +301,20 @@ def _build_smeta(ws, client, obj_name, proj_date,
             c.number_format = RUB
         _cell(ws, r, 10, "", bg=bg)
         _set_row(ws, r, 17)
+        if label.startswith("Итого работы (себестоимость)"):
+            work_sum_row = r
+        if "Маржа на работы" in label:
+            work_margin_row = r
+        if label.startswith("Итого работы с маржей"):
+            work_total_row = r
         if label.startswith("Итого работы + материалы"):
             wm_row = r
+            # Пересчитываем: работы (с маржей) + материалы (строка перед нами)
+            w_ref = (f"I{work_total_row}" if work_total_row else
+                     f"I{work_sum_row}" if work_sum_row else "0")
+            m_ref = f"I{r - 1}"
+            ws.cell(row=r, column=9).value = f"={w_ref}+{m_ref}"
+            ws.cell(row=r, column=9).number_format = RUB
         r += 1
 
     if fin["overhead_pct"] > 0:
