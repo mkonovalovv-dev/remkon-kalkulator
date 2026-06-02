@@ -223,14 +223,11 @@ def suggest_materials(
     existing_materials: list,
     user_message: str,
     api_key: str,
+    memory: list = None,
 ) -> dict:
     """
-    Claude подбирает материалы для работы на основе:
-    - названия работы
-    - объёма
-    - уже выбранных материалов (если есть)
-    - сообщения менеджера (что хочет / уточнения)
-
+    Claude подбирает материалы для работы.
+    memory: список прошлых правок [{material, unit, purchase_price, client_price, date}]
     Возвращает {materials: [...], clarifying_question: str|None, agent_comment: str}
     """
     import anthropic
@@ -251,9 +248,19 @@ def suggest_materials(
                  for m in existing_materials]
         existing_text = "Уже выбранные материалы:\n" + "\n".join(lines) + "\n\n"
 
+    # Включаем память о прошлых правках
+    memory_text = ""
+    if memory:
+        mem_lines = [
+            f"  - {m['material']} ({m.get('unit','')}) — наша цена: {m.get('purchase_price',0)} ₽, клиент: {m.get('client_price',0)} ₽"
+            for m in memory[-15:]
+        ]
+        memory_text = "НАШИ ЗАКУПОЧНЫЕ ЦЕНЫ (из прошлых смет):\n" + "\n".join(mem_lines) + "\n\n"
+
     prompt = (
         f"РАБОТА: {work_name}\n"
         f"ОБЪЁМ: {work_qty} {work_unit}\n\n"
+        f"{memory_text}"
         f"{existing_text}"
         f"КАТАЛОГ МАТЕРИАЛОВ:\n{catalog_text}\n\n"
         f"МЕНЕДЖЕР ПИШЕТ: {user_message}"
