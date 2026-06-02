@@ -776,22 +776,62 @@ with tab_kp:
                                         st.session_state[mat_key][mi]["variant"] = new_v_key
                                     st.rerun()
                             with mc4:
-                                # Если цена не задана — даём ввести
                                 if cp == 0:
+                                    # Цена не задана — кнопка поиска Gemini + ручной ввод
+                                    gemini_key_m = st.secrets.get("GEMINI_API_KEY",
+                                                   os.environ.get("GEMINI_API_KEY", ""))
+                                    if gemini_key_m:
+                                        if st.button("🔍 Найти цену", key=f"gem_mat_{iid}_{mi}",
+                                                     use_container_width=True):
+                                            from ai_parser import get_market_price
+                                            mat_name_search = m.get("brand") or m.get("name", "")
+                                            with st.spinner("Gemini ищет цену…"):
+                                                pd_m = get_market_price(mat_name_search,
+                                                                        m.get("unit", "шт."),
+                                                                        gemini_key_m)
+                                            if pd_m["price_mid"] > 0:
+                                                market_cp = pd_m["price_mid"]
+                                                market_pp = int(market_cp * 0.78)  # ~22% ниже рынка
+                                                st.session_state[mat_key][mi]["client_price"]   = market_cp
+                                                st.session_state[mat_key][mi]["purchase_price"] = market_pp
+                                                st.session_state[mat_key][mi]["gemini_source"]  = pd_m.get("source","Gemini")
+                                                st.rerun()
                                     new_cp = st.number_input(
-                                        "Цена ₽/ед.", min_value=0, step=50,
+                                        "или вбить вручную ₽",
+                                        min_value=0, step=50,
                                         key=f"mat_cp_{iid}_{mi}",
                                         label_visibility="visible",
                                     )
                                     if new_cp > 0:
-                                        st.session_state[mat_key][mi]["client_price"] = new_cp
-                                        st.session_state[mat_key][mi]["purchase_price"] = int(new_cp / 1.2)
+                                        st.session_state[mat_key][mi]["client_price"]   = new_cp
+                                        st.session_state[mat_key][mi]["purchase_price"] = int(new_cp * 0.78)
                                         st.rerun()
                                 else:
-                                    st.metric("₽/ед.", f"{int(cp):,}".replace(",", " "))
+                                    # Показываем клиентскую цену + закупочную + маржу
+                                    pp = m.get("purchase_price", int(cp * 0.78))
+                                    margin_m = int(cp - pp)
+                                    margin_pct_m = int((cp - pp) / pp * 100) if pp > 0 else 0
+                                    st.markdown(f"**{int(cp):,} ₽**".replace(",", " "))
+                                    st.caption(f"клиент")
+                                    # Поле для нашей закупочной (скрытое поле)
+                                    new_pp = st.number_input(
+                                        f"Наша закупка ₽",
+                                        min_value=0, value=int(pp), step=50,
+                                        key=f"mat_pp_{iid}_{mi}",
+                                        help=f"Маржа: {margin_m:,} ₽ ({margin_pct_m}%)".replace(",", " "),
+                                    )
+                                    if new_pp != pp and new_pp > 0:
+                                        st.session_state[mat_key][mi]["purchase_price"] = new_pp
+                                        st.rerun()
+                                    if m.get("gemini_source"):
+                                        st.caption(f"📡 {m['gemini_source']}")
                             with mc5:
                                 if total_m > 0:
+                                    pp_total = int(m.get("purchase_price", cp * 0.78) * m.get("qty_total", 0))
+                                    margin_total = total_m - pp_total
                                     st.metric("Итого", f"{int(total_m):,} ₽".replace(",", " "))
+                                    if margin_total > 0:
+                                        st.caption(f"маржа: +{int(margin_total):,} ₽".replace(",", " "))
                                 else:
                                     st.caption("⚠️ Укажите цену")
 
