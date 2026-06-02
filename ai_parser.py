@@ -175,7 +175,7 @@ def call_claude_api(text: str, api_key: str) -> list[dict]:
 
 def match_items(parsed: list[dict], all_items: list, api_key: str = None) -> list[dict]:
     """Семантически сопоставляет позиции ТЗ со справочником через Claude.
-    Если api_key не передан — берёт из env/secrets."""
+    Принимает 2 или 3 аргумента — api_key необязателен, берётся из secrets/env автоматически."""
     if not api_key:
         try:
             import streamlit as _st

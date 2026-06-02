@@ -1,4 +1,4 @@
-# app.py — Калькулятор КП Ремкон v2.0
+# app.py — Калькулятор КП Ремкон v2.1
 # Запуск: streamlit run app.py
 
 import streamlit as st
@@ -16,11 +16,178 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ─── CSS: компактная таблица корзины ─────────────────────────────────────────
+# ─── ДИЗАЙН-СИСТЕМА ──────────────────────────────────────────────────────────
 st.markdown("""
 <style>
+/* ── Base ── */
+.main .block-container { max-width: 1300px; padding: 1.5rem 2rem; }
+.main { background: #F8FAFC; }
+
+/* ── Hide default Streamlit chrome ── */
+#MainMenu, footer, header { visibility: hidden; }
+
+/* ── App header ── */
+.app-header {
+    background: linear-gradient(135deg, #0F2744 0%, #1D4ED8 100%);
+    padding: 22px 32px; border-radius: 16px; margin-bottom: 8px;
+    display: flex; align-items: center; justify-content: space-between;
+}
+.app-header-left h1 {
+    font-size: 26px; font-weight: 800; color: white; margin: 0; letter-spacing: -0.5px;
+}
+.app-header-left p {
+    font-size: 13px; color: rgba(255,255,255,0.65); margin: 4px 0 0;
+}
+.app-header-badge {
+    background: rgba(255,255,255,0.15); color: white;
+    padding: 4px 12px; border-radius: 999px; font-size: 12px;
+    font-weight: 600; border: 1px solid rgba(255,255,255,0.25);
+}
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0; background: #E2E8F0; border-radius: 12px; padding: 4px;
+    margin-bottom: 16px;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 9px; padding: 9px 24px; font-size: 14px; font-weight: 600;
+    color: #64748B; background: transparent; border: none; transition: all 0.2s;
+}
+.stTabs [aria-selected="true"] {
+    background: white !important; color: #1D4ED8 !important;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.1);
+}
+.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+
+/* ── Upload hero ── */
+.upload-hero {
+    background: linear-gradient(135deg, #0F2744 0%, #1E40AF 50%, #3B82F6 100%);
+    border-radius: 20px; padding: 52px 40px; text-align: center; color: white;
+    margin: 8px 0 24px;
+}
+.upload-hero h2 { font-size: 30px; font-weight: 800; margin: 0 0 10px; color: white; letter-spacing: -0.5px; }
+.upload-hero p { font-size: 16px; color: rgba(255,255,255,0.75); margin: 0 0 28px; }
+.format-chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 8px; }
+.format-chip {
+    background: rgba(255,255,255,0.15); color: white;
+    padding: 5px 14px; border-radius: 999px; font-size: 13px; font-weight: 500;
+    border: 1px solid rgba(255,255,255,0.3);
+}
+
+/* ── Status badges ── */
+.badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.3px;
+}
+.badge-green  { background: #DCFCE7; color: #14532D; }
+.badge-yellow { background: #FEF9C3; color: #713F12; }
+.badge-red    { background: #FEE2E2; color: #7F1D1D; }
+.badge-orange { background: #FFEDD5; color: #7C2D12; }
+.badge-blue   { background: #DBEAFE; color: #1E3A8A; }
+
+/* ── Result section header ── */
+.sec-header {
+    background: #1E293B; color: white; padding: 7px 16px;
+    border-radius: 8px; font-size: 11px; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase; margin: 20px 0 8px;
+    display: flex; align-items: center; gap: 8px;
+}
+
+/* ── Result card ── */
+.r-card {
+    background: white; border-radius: 10px; padding: 14px 18px;
+    margin: 5px 0; border: 1px solid #E2E8F0;
+    transition: box-shadow 0.15s, border-color 0.15s;
+}
+.r-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.07); border-color: #CBD5E1; }
+.r-card.match-ok  { border-left: 3px solid #10B981; }
+.r-card.match-mid { border-left: 3px solid #F59E0B; }
+.r-card.match-no  { border-left: 3px solid #EF4444; background: #FFF8F8; }
+.r-card.modified  { border-left: 3px solid #F59E0B; background: #FFFBEB; }
+.r-card.added     { border-left: 3px solid #10B981; background: #F0FDF4; }
+.r-card.removed   { border-left: 3px solid #EF4444; background: #FFF5F5; opacity: 0.7; }
+.r-name  { font-weight: 700; font-size: 14px; color: #0F172A; }
+.r-sub   { font-size: 12px; color: #64748B; margin-top: 3px; }
+.r-note  { font-size: 12px; color: #F59E0B; font-weight: 600; margin-top: 4px; }
+
+/* ── Stats bar ── */
+.stats-bar {
+    display: flex; gap: 16px; background: white; border-radius: 12px;
+    padding: 16px 24px; border: 1px solid #E2E8F0; margin: 16px 0;
+    flex-wrap: wrap;
+}
+.stat-item { text-align: center; }
+.stat-value { font-size: 22px; font-weight: 800; color: #0F172A; }
+.stat-label { font-size: 11px; color: #94A3B8; font-weight: 600;
+              letter-spacing: 0.5px; text-transform: uppercase; margin-top: 2px; }
+
+/* ── Cart item ── */
+.cart-item {
+    background: white; border-radius: 10px; padding: 12px 16px;
+    border: 1px solid #E2E8F0; margin: 4px 0;
+}
+
+/* ── Summary metric ── */
+.sum-metric {
+    background: linear-gradient(135deg, #0F2744, #1D4ED8);
+    color: white; border-radius: 14px; padding: 20px 24px; text-align: center;
+}
+.sum-metric .val { font-size: 28px; font-weight: 800; color: white; }
+.sum-metric .lbl { font-size: 12px; color: rgba(255,255,255,0.7); margin-top: 4px; font-weight: 600; }
+
+/* ── Buttons ── */
+.stButton > button {
+    border-radius: 10px; font-weight: 600; transition: all 0.2s;
+    border: 1px solid transparent;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #1D4ED8, #3B82F6);
+    border: none; color: white; box-shadow: 0 2px 8px rgba(59,130,246,0.35);
+}
+.stButton > button[kind="primary"]:hover {
+    transform: translateY(-1px); box-shadow: 0 4px 16px rgba(59,130,246,0.45);
+}
+.stButton > button[kind="secondary"] {
+    background: white; border-color: #CBD5E1; color: #374151;
+}
+.stButton > button[kind="secondary"]:hover { border-color: #3B82F6; color: #1D4ED8; }
+
+/* ── Progress bar ── */
+.stProgress > div > div > div {
+    background: linear-gradient(90deg, #1D4ED8, #3B82F6) !important;
+    border-radius: 999px;
+}
+
+/* ── File uploader inside hero ── */
+[data-testid="stFileUploader"] {
+    background: rgba(255,255,255,0.08) !important;
+    border: 2px dashed rgba(255,255,255,0.4) !important;
+    border-radius: 12px !important; transition: all 0.2s;
+}
+[data-testid="stFileUploader"]:hover {
+    border-color: rgba(255,255,255,0.7) !important;
+    background: rgba(255,255,255,0.12) !important;
+}
+[data-testid="stFileUploader"] label { color: white !important; }
+[data-testid="stFileUploaderDropzoneInput"] + div { color: rgba(255,255,255,0.8) !important; }
+
+/* ── Compact rows ── */
 div[data-testid="stHorizontalBlock"] > div { padding: 0 4px !important; }
 div[data-testid="stNumberInput"] input { padding: 4px 8px !important; }
+
+/* ── Expander ── */
+.streamlit-expanderHeader {
+    background: #F8FAFC !important; border-radius: 8px !important;
+    font-weight: 600 !important; font-size: 14px !important;
+    border: 1px solid #E2E8F0 !important;
+}
+
+/* ── Success / Error messages ── */
+.stSuccess { border-radius: 10px !important; }
+.stError   { border-radius: 10px !important; }
+.stWarning { border-radius: 10px !important; }
+.stInfo    { border-radius: 10px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -98,8 +265,21 @@ def item_price(item: dict) -> float:
     return sum(w["price"] * w["norm"] for w in item.get("works", []))
 
 # ─── ШАПКА ───────────────────────────────────────────────────────────────────
-st.title("🏗️ Калькулятор КП — Ремкон")
-tab_kp, tab_tz, tab_hist = st.tabs(["📝 Составить КП", "🤖 Загрузить ТЗ (AI)", "📋 История КП"])
+st.markdown("""
+<div class="app-header">
+  <div class="app-header-left">
+    <h1>🏗️ Ремкон · Калькулятор КП</h1>
+    <p>Система формирования коммерческих предложений · 02.06.2026 · Безналичный расчёт</p>
+  </div>
+  <div>
+    <span class="app-header-badge">НДС 22%</span>&nbsp;
+    <span class="app-header-badge">v2.1</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ТЗ — первая вкладка (основной поток работы)
+tab_tz, tab_kp, tab_hist = st.tabs(["🤖 Разбор ТЗ", "🛒 Конструктор КП", "📋 История"])
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -875,75 +1055,108 @@ with tab_kp:
 # TAB 2 — AI-РАЗБОР ТЗ
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_tz:
-    st.subheader("🤖 Разбор ТЗ — два этапа: AI → проверка человека → финальный состав")
-    st.caption(
-        "Этап 1: AI автоматически разбирает ТЗ и подбирает позиции  |  "
-        "Этап 2: вы расставляете галочки, пишете правки → система перестраивает состав"
-    )
+    api_key   = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
+    gemini_key = st.secrets.get("GEMINI_API_KEY",   os.environ.get("GEMINI_API_KEY", ""))
 
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
-    gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
-
-    # ── Инициализация state для TZ review ───────────────────────────────────
-    if "tz_review" not in st.session_state:
-        st.session_state["tz_review"] = None   # список позиций после AI
-    if "tz_review_final" not in st.session_state:
-        st.session_state["tz_review_final"] = None  # после применения правок
+    if "tz_review"       not in st.session_state: st.session_state["tz_review"]       = None
+    if "tz_review_final" not in st.session_state: st.session_state["tz_review_final"] = None
 
     # ══════════════════════════════════════════
-    # ЭТАП 1: Загрузка и AI-разбор
+    # ЭТАП 1: Загрузка и AI-разбор — стильный hero
     # ══════════════════════════════════════════
     if st.session_state["tz_review"] is None:
+
+        st.markdown("""
+        <div class="upload-hero">
+          <h2>Загрузите ТЗ — AI всё разберёт сам</h2>
+          <p>Загрузите техническое задание или смету, система автоматически<br>
+             извлечёт работы, найдёт их в справочнике и предложит состав КП</p>
+          <div class="format-chips">
+            <span class="format-chip">📊 Excel</span>
+            <span class="format-chip">📄 PDF</span>
+            <span class="format-chip">📝 Word</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
         uploaded = st.file_uploader(
-            "Загрузите ТЗ (Excel, PDF, Word)",
+            "Перетащите файл сюда или нажмите для выбора",
             type=["xlsx", "xls", "pdf", "docx"],
             key="tz_file",
+            label_visibility="collapsed",
         )
 
-        if uploaded and api_key:
-            if st.button("🚀 Запустить AI-разбор", type="primary", use_container_width=True):
-                try:
-                    from ai_parser import extract_text, call_claude_api, match_items
-                    raw_text = extract_text(uploaded.read(), uploaded.name)
-                    if not raw_text.strip():
-                        st.error("Не удалось извлечь текст из файла.")
-                    else:
-                        prog = st.progress(0, text="Читаю документ…")
-                        parsed = call_claude_api(raw_text, api_key)
-                        prog.progress(40, text=f"Извлечено {len(parsed)} позиций, ищу в справочнике…")
-                        matched = match_items(parsed, all_items_combined, api_key)
-                        prog.progress(100, text="Готово!")
+        if uploaded:
+            # Карточка с инфо о файле
+            fsize = round(uploaded.size / 1024, 1)
+            st.markdown(f"""
+            <div style="background:white;border:1px solid #E2E8F0;border-radius:12px;
+                        padding:16px 20px;display:flex;align-items:center;gap:16px;margin:8px 0">
+              <div style="font-size:32px">📂</div>
+              <div>
+                <div style="font-weight:700;font-size:15px;color:#0F172A">{uploaded.name}</div>
+                <div style="font-size:13px;color:#64748B;margin-top:2px">{fsize} КБ · Готов к разбору</div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-                        # Строим review-состояние
-                        review = []
-                        for i, m in enumerate(matched):
-                            review.append({
-                                "idx":         i,
-                                "parsed_name": m["parsed_name"],
-                                "parsed_unit": m["parsed_unit"],
-                                "qty":         m.get("qty") or 0.0,
-                                "matched_item": m.get("matched_item"),
-                                "matched_id":  m.get("matched_id"),
-                                "confidence":  m.get("confidence", 0.0),
-                                "comment":     m.get("comment", ""),
-                                "in_catalog":  m.get("in_catalog", False),
-                                "include":     True,
-                                "user_comment": "",
-                                "status":      "ai_matched",  # ai_matched | unchanged | modified | added | removed
-                            })
+            if api_key:
+                if st.button("🚀 Запустить AI-разбор", type="primary", use_container_width=True):
+                    try:
+                        from ai_parser import extract_text, call_claude_api, match_items
+                        raw_text = extract_text(uploaded.read(), uploaded.name)
+                        if not raw_text.strip():
+                            st.error("Не удалось извлечь текст из файла.")
+                        else:
+                            prog = st.progress(0, text="Читаю документ…")
+                            parsed = call_claude_api(raw_text, api_key)
+                            prog.progress(40, text=f"Извлечено {len(parsed)} позиций, ищу соответствия…")
+                            matched = match_items(parsed, all_items_combined, api_key)
+                            prog.progress(100, text="Готово!")
 
-                        not_found = sum(1 for r in review if not r["in_catalog"])
-                        st.session_state["tz_review"] = review
-                        st.success(
-                            f"✅ AI разобрал ТЗ: {len(review)} позиций  ·  "
-                            f"В справочнике: {len(review)-not_found}  ·  "
-                            f"Не найдено: {not_found}"
-                        )
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Ошибка: {e}")
-        elif not uploaded:
-            st.info("Загрузите файл ТЗ чтобы начать")
+                            review = []
+                            for i, m in enumerate(matched):
+                                review.append({
+                                    "idx":          i,
+                                    "parsed_name":  m["parsed_name"],
+                                    "parsed_unit":  m["parsed_unit"],
+                                    "qty":          m.get("qty") or 0.0,
+                                    "matched_item": m.get("matched_item"),
+                                    "matched_id":   m.get("matched_id"),
+                                    "confidence":   m.get("confidence", 0.0),
+                                    "comment":      m.get("comment", ""),
+                                    "in_catalog":   m.get("in_catalog", False),
+                                    "include":      True,
+                                    "user_comment": "",
+                                    "status":       "ai_matched",
+                                })
+
+                            not_found = sum(1 for r in review if not r["in_catalog"])
+                            found     = len(review) - not_found
+                            st.session_state["tz_review"] = review
+
+                            # Стильный итог
+                            st.markdown(f"""
+                            <div class="stats-bar">
+                              <div class="stat-item">
+                                <div class="stat-value" style="color:#0F172A">{len(review)}</div>
+                                <div class="stat-label">Позиций извлечено</div>
+                              </div>
+                              <div class="stat-item">
+                                <div class="stat-value" style="color:#10B981">{found}</div>
+                                <div class="stat-label">Найдено в справочнике</div>
+                              </div>
+                              <div class="stat-item">
+                                <div class="stat-value" style="color:#EF4444">{not_found}</div>
+                                <div class="stat-label">Нет в справочнике</div>
+                              </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Ошибка: {e}")
+            else:
+                st.warning("⚠️ ANTHROPIC_API_KEY не настроен в Secrets")
 
     # ══════════════════════════════════════════
     # ЭТАП 2: Проверка человека + применение правок
@@ -998,7 +1211,11 @@ with tab_tz:
             # Заголовок раздела
             sec_hd, sec_comment_col = st.columns([3, 3])
             with sec_hd:
-                st.markdown(f"**{sec}**")
+                n_in_sec = len([r for r in rows if r.get("include", True) and r.get("status") != "removed"])
+                st.markdown(
+                    f'<div class="sec-header">📁 {sec} &nbsp;<span style="opacity:0.6;font-weight:400">{n_in_sec} поз.</span></div>',
+                    unsafe_allow_html=True,
+                )
             with sec_comment_col:
                 if not is_final:
                     sc = st.text_input(
