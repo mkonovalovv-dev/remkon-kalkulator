@@ -1,4 +1,4 @@
-# app.py — Калькулятор КП Ремкон v1.3
+# app.py — Калькулятор КП Ремкон v2.0
 # Запуск: streamlit run app.py
 
 import streamlit as st
@@ -15,6 +15,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# ─── CSS: компактная таблица корзины ─────────────────────────────────────────
+st.markdown("""
+<style>
+div[data-testid="stHorizontalBlock"] > div { padding: 0 4px !important; }
+div[data-testid="stNumberInput"] input { padding: 4px 8px !important; }
+</style>
+""", unsafe_allow_html=True)
 
 # ─── ПАРОЛЬ ──────────────────────────────────────────────────────────────────
 def check_password() -> bool:
@@ -37,36 +45,41 @@ def check_password() -> bool:
 if not check_password():
     st.stop()
 
-# ─── ИНИЦИАЛИЗАЦИЯ STATE ──────────────────────────────────────────────────────
+# ─── ДАННЫЕ И STATE ───────────────────────────────────────────────────────────
 all_items = load_data()
 
-if "section_order"    not in st.session_state:
-    st.session_state["section_order"]    = list(DEFAULT_SECTION_ORDER)
-if "custom_items"     not in st.session_state:
-    st.session_state["custom_items"]     = []
-if "adding_to_sec"    not in st.session_state:
-    st.session_state["adding_to_sec"]    = None
-if "chain_qtys"       not in st.session_state:
-    st.session_state["chain_qtys"]       = {}   # {item_id: qty}
-if "chain_checked"    not in st.session_state:
-    st.session_state["chain_checked"]    = set() # item_ids, добавленных через мастер
-if "kp_history"       not in st.session_state:
-    # Загружаем из файла если есть
+if "section_order"  not in st.session_state:
+    st.session_state["section_order"]  = list(DEFAULT_SECTION_ORDER)
+if "custom_items"   not in st.session_state:
+    st.session_state["custom_items"]   = []
+if "kp_cart"        not in st.session_state:
+    st.session_state["kp_cart"]        = {}   # {item_id: {"item": ..., "qty": float}}
+if "kp_history"     not in st.session_state:
     hist_path = os.path.join(os.path.dirname(__file__), "kp_history.json")
-    if os.path.exists(hist_path):
-        try:
-            with open(hist_path, "r", encoding="utf-8") as f:
-                st.session_state["kp_history"] = json.load(f)
-        except Exception:
-            st.session_state["kp_history"] = []
-    else:
+    try:
+        with open(hist_path, "r", encoding="utf-8") as f:
+            st.session_state["kp_history"] = json.load(f)
+    except Exception:
         st.session_state["kp_history"] = []
-if "loaded_kp"        not in st.session_state:
-    st.session_state["loaded_kp"]        = None  # загруженный КП из истории
 
 all_items_combined = all_items + st.session_state["custom_items"]
+item_map = {i["id"]: i for i in all_items_combined}
 
-# ─── ВКЛАДКИ ─────────────────────────────────────────────────────────────────
+# Вспомогательные функции корзины
+def cart_add(item: dict, qty: float):
+    iid = item["id"]
+    if iid in st.session_state["kp_cart"]:
+        st.session_state["kp_cart"][iid]["qty"] += qty
+    else:
+        st.session_state["kp_cart"][iid] = {"item": item, "qty": qty}
+
+def cart_remove(item_id: str):
+    st.session_state["kp_cart"].pop(item_id, None)
+
+def item_price(item: dict) -> float:
+    return sum(w["price"] * w["norm"] for w in item.get("works", []))
+
+# ─── ШАПКА ───────────────────────────────────────────────────────────────────
 st.title("🏗️ Калькулятор КП — Ремкон")
 tab_kp, tab_tz, tab_hist = st.tabs(["📝 Составить КП", "🤖 Загрузить ТЗ (AI)", "📋 История КП"])
 
@@ -80,24 +93,403 @@ with tab_kp:
     with st.expander("📋 Информация об объекте", expanded=True):
         c1, c2, c3 = st.columns(3)
         with c1:
-            client   = st.text_input("Заказчик",       placeholder="ООО «Пример»",       key="kp_client")
-            address  = st.text_input("Адрес объекта",  placeholder="г. Москва, ул. …",   key="kp_address")
+            client   = st.text_input("Заказчик",        placeholder="ООО «Пример»",    key="kp_client")
+            address  = st.text_input("Адрес объекта",   placeholder="г. Москва, ул…",  key="kp_address")
         with c2:
-            obj_name = st.text_input("Название объекта", placeholder="Офис / склад",      key="kp_obj")
-            area_obj = st.number_input("Площадь, м²",  min_value=0.0, step=1.0,           key="kp_area", format="%.1f")
-            height   = st.number_input("Высота, м",    min_value=2.0, max_value=10.0,
-                                       step=0.1, value=3.0, format="%.1f",                key="kp_height")
+            obj_name = st.text_input("Объект",          placeholder="Офис / склад",    key="kp_obj")
+            area_obj = st.number_input("Площадь, м²",   min_value=0.0, step=1.0,       key="kp_area", format="%.1f")
+            height   = st.number_input("Высота, м",     min_value=2.0, max_value=10.0,
+                                       step=0.1, value=3.0, format="%.1f",             key="kp_height")
         with c3:
             proj_date = st.date_input("Дата КП", value=date.today(), key="kp_date")
-            manager   = st.text_input("Менеджер", placeholder="Имя",                     key="kp_mgr")
+            manager   = st.text_input("Менеджер",       placeholder="Имя",             key="kp_mgr")
 
     st.markdown("---")
 
-    # ── Конструктор разделов (DnD) ───────────────────────────────────────────
-    with st.expander("🔧 Конструктор разделов и позиций", expanded=False):
-        st.caption("Перетащите разделы мышью · Создайте новый раздел · Добавьте свою позицию")
+    # ════════════════════════════════════════════════════
+    # ГЛАВНЫЙ БЛОК: ПОИСК + КОРЗИНА
+    # ════════════════════════════════════════════════════
 
-        # Drag & Drop через streamlit-sortables
+    left_col, right_col = st.columns([5, 4], gap="large")
+
+    # ── ЛЕВАЯ КОЛОНКА: ПОИСК ────────────────────────────────────────────────
+    with left_col:
+        st.subheader("🔍 Поиск работ")
+
+        search_q = st.text_input(
+            "Введите название работы",
+            placeholder="Штукатурка, паркет, демонтаж плитки…",
+            key="search_q",
+            label_visibility="collapsed",
+        )
+
+        # Быстрые фильтры по категориям
+        quick_cats = ["Все", "Демонтаж", "Стяжка", "Штукатурка", "ГКЛ", "Малярка",
+                      "Плитка", "Полы", "Двери", "Электрика", "Сантехника", "Кровля"]
+        selected_cat = st.pills("Быстрый фильтр:", quick_cats, default="Все", key="quick_cat")
+
+        st.markdown("")  # отступ
+
+        # Маппинг категорий к разделам
+        CAT_MAP = {
+            "Демонтаж":   ["Демонтажные работы"],
+            "Стяжка":     ["Стяжка полов", "Черновые и общестроительные работы"],
+            "Штукатурка": ["Штукатурные работы"],
+            "ГКЛ":        ["ГКЛ (гипсокартон)", "Возведение перегородок"],
+            "Малярка":    ["Малярные работы"],
+            "Плитка":     ["Плиточные работы"],
+            "Полы":       ["Финишные полы", "Стяжка полов"],
+            "Двери":      ["Монтаж дверей"],
+            "Электрика":  ["Электромонтаж (черновой)", "Финишная электрика"],
+            "Сантехника": ["Сантехника (черновая)", "Финишная сантехника"],
+            "Кровля":     ["Кровельные работы", "Фасадные работы"],
+        }
+
+        def filter_items(query: str, cat: str) -> list:
+            q = query.strip().lower()
+            cat_sections = CAT_MAP.get(cat, [])
+            results = []
+            for item in all_items_combined:
+                # Фильтр по категории
+                if cat != "Все" and item["section"] not in cat_sections:
+                    continue
+                # Фильтр по строке поиска
+                if q:
+                    searchable = (item["name"] + " " + item["section"] + " " +
+                                  (item.get("subsection") or "")).lower()
+                    if not all(word in searchable for word in q.split()):
+                        continue
+                results.append(item)
+            return results
+
+        results = filter_items(search_q, selected_cat)
+
+        # Если нет запроса и нет фильтра — показываем подсказку
+        if not search_q.strip() and selected_cat == "Все":
+            st.info("Введите название работы или выберите категорию выше")
+
+            # Показываем цепочки-мастера как быстрый старт
+            st.markdown("**⚡ Быстрый старт — мастер расчёта:**")
+            chain_cols = st.columns(3)
+            for ci, (sec_name, chain_def) in enumerate(CHAINS.items()):
+                with chain_cols[ci % 3]:
+                    if st.button(
+                        f"{chain_def['emoji']} {sec_name.split('(')[0].strip()}",
+                        key=f"quick_chain_{ci}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["active_chain"] = sec_name
+                        st.rerun()
+        else:
+            # Показываем результаты
+            MAX_RESULTS = 30
+            total_found = len(results)
+            if total_found == 0:
+                st.warning("Позиций не найдено. Попробуйте другое слово.")
+                if st.button("➕ Добавить новую позицию в справочник", key="add_new_from_search"):
+                    st.session_state["show_add_custom"] = True
+            else:
+                st.caption(f"Найдено: {total_found} позиций{' (показаны первые 30)' if total_found > MAX_RESULTS else ''}")
+
+                for item in results[:MAX_RESULTS]:
+                    iid = item["id"]
+                    in_cart = iid in st.session_state["kp_cart"]
+                    price = item_price(item)
+
+                    rc1, rc2, rc3, rc4 = st.columns([0.4, 5, 2, 1.2])
+                    with rc1:
+                        st.markdown("✅" if in_cart else "⬜")
+                    with rc2:
+                        st.markdown(f"**{item['name']}**")
+                        st.caption(f"{item['section']}  ·  {item.get('subsection', '')}")
+                    with rc3:
+                        qty_key = f"sq_{iid}"
+                        current_cart_qty = st.session_state["kp_cart"].get(iid, {}).get("qty", 1.0)
+                        qty = st.number_input(
+                            item["unit"],
+                            min_value=0.0,
+                            value=current_cart_qty if in_cart else 1.0,
+                            step=1.0, format="%.1f",
+                            key=qty_key,
+                            label_visibility="visible",
+                        )
+                    with rc4:
+                        st.markdown(f"*{price:,.0f} ₽*")
+                        if in_cart:
+                            if st.button("✖ Убрать", key=f"rm_s_{iid}", use_container_width=True):
+                                cart_remove(iid)
+                                st.rerun()
+                        else:
+                            if st.button("➕ Добавить", key=f"add_s_{iid}", use_container_width=True, type="primary"):
+                                cart_add(item, qty)
+                                st.rerun()
+
+        # ── Мастер расчёта цепочек ───────────────────────────────────────
+        active_chain = st.session_state.get("active_chain")
+        if active_chain and active_chain in CHAINS:
+            st.markdown("---")
+            chain_def = CHAINS[active_chain]
+            st.markdown(f"#### {chain_def['emoji']} Мастер: {chain_def['label']}")
+
+            inp_vals = {}
+            inp_cols = st.columns(min(len(chain_def["inputs"]), 3))
+            for i, inp in enumerate(chain_def["inputs"]):
+                if inp.get("advanced"):
+                    inp_vals[inp["id"]] = inp["default"]
+                    continue
+                with inp_cols[i % len(inp_cols)]:
+                    inp_vals[inp["id"]] = st.number_input(
+                        f"{inp['label']}, {inp['unit']}",
+                        min_value=0.0, value=float(inp["default"]),
+                        step=0.5, format="%.2f",
+                        key=f"ch_inp_{active_chain}_{inp['id']}",
+                    )
+
+            computed_vals = dict(inp_vals)
+            if chain_def.get("computed"):
+                st.markdown("**📐 Объёмы:**")
+                cv_cols = st.columns(min(len(chain_def["computed"]), 4))
+                for ci2, (cid, (expr, unit, clabel)) in enumerate(chain_def["computed"].items()):
+                    try:
+                        val = eval(expr, {"__builtins__": {}},
+                                   {**computed_vals, "max": max, "min": min, "round": round})
+                    except Exception:
+                        val = 0.0
+                    computed_vals[cid] = val
+                    with cv_cols[ci2 % len(cv_cols)]:
+                        st.metric(clabel, f"{val} {unit}")
+
+            chain_matches = find_chain_items(chain_def, all_items_combined)
+            if chain_matches:
+                st.markdown("**📋 Добавить в КП:**")
+                for match in chain_matches:
+                    item = match["item"]
+                    qty_id = match["qty_id"]
+                    note = match["note"]
+                    qty_val = float(computed_vals.get(qty_id, 0.0)) if qty_id else 1.0
+                    iid = item["id"]
+
+                    cm1, cm2, cm3, cm4 = st.columns([0.4, 5, 2, 1.5])
+                    in_cart = iid in st.session_state["kp_cart"]
+                    with cm1:
+                        st.markdown("✅" if in_cart else "⬜")
+                    with cm2:
+                        price = item_price(item)
+                        st.write(f"**{item['name']}** — {price:,.0f} ₽/{item['unit']}")
+                        st.caption(f"{item['section']}  {'('+note+')' if note else ''}")
+                    with cm3:
+                        chain_qty = st.number_input(
+                            item["unit"], min_value=0.0, value=qty_val,
+                            step=0.5, format="%.2f",
+                            key=f"ch_qty_{active_chain}_{iid}",
+                        )
+                    with cm4:
+                        if in_cart:
+                            if st.button("✖ Убрать", key=f"ch_rm_{active_chain}_{iid}", use_container_width=True):
+                                cart_remove(iid)
+                                st.rerun()
+                        else:
+                            if st.button("➕ В КП", key=f"ch_add_{active_chain}_{iid}",
+                                         use_container_width=True, type="primary"):
+                                cart_add(item, chain_qty)
+                                st.rerun()
+
+            if st.button("✖ Закрыть мастер", key="close_chain"):
+                st.session_state["active_chain"] = None
+                st.rerun()
+
+        # ── Добавление своей позиции ─────────────────────────────────────
+        if st.session_state.get("show_add_custom"):
+            st.markdown("---")
+            st.markdown("**➕ Своя позиция:**")
+            nc1, nc2, nc3, nc4 = st.columns([3, 1.2, 1.2, 1.5])
+            with nc1: new_name = st.text_input("Название", key="cust_name")
+            with nc2: new_unit = st.text_input("Ед.", value="кв.м.", key="cust_unit")
+            with nc3: new_price = st.number_input("Цена ₽/ед.", min_value=0, step=100, key="cust_price")
+            with nc4: new_sec = st.selectbox("Раздел", st.session_state["section_order"], key="cust_sec")
+            if st.button("✅ Добавить в справочник и КП", type="primary", key="cust_save"):
+                if new_name.strip():
+                    ni = {
+                        "id": f"custom_{uuid.uuid4().hex[:8]}",
+                        "section": new_sec,
+                        "subsection": "Пользовательские позиции",
+                        "name": new_name.strip(),
+                        "unit": new_unit.strip() or "шт.",
+                        "works": [{"name": new_name.strip(), "unit": new_unit.strip() or "шт.",
+                                   "price": int(new_price), "norm": 1.0}],
+                        "materials": [],
+                    }
+                    st.session_state["custom_items"].append(ni)
+                    all_items_combined = all_items + st.session_state["custom_items"]
+                    cart_add(ni, 1.0)
+                    st.session_state["show_add_custom"] = False
+                    st.rerun()
+
+    # ── ПРАВАЯ КОЛОНКА: КОРЗИНА КП ───────────────────────────────────────────
+    with right_col:
+        cart = st.session_state["kp_cart"]
+        n_cart = len(cart)
+
+        # Подсчёт итогов
+        total_work = total_mat = 0.0
+        for entry in cart.values():
+            it = entry["item"]
+            q  = entry["qty"]
+            total_work += sum(q * w.get("norm",1)*w.get("price",0) for w in it.get("works",[]))
+            total_mat  += sum(q * m.get("norm",0)*m.get("price",0) for m in it.get("materials",[]))
+
+        # Заголовок корзины
+        if n_cart > 0:
+            st.subheader(f"🛒 КП ({n_cart} поз.)")
+            m1, m2 = st.columns(2)
+            m1.metric("Работы", f"{int(total_work):,} ₽".replace(",", " "))
+            m2.metric("Материалы", f"{int(total_mat):,} ₽".replace(",", " "))
+
+            st.markdown("---")
+
+            # Список позиций в корзине
+            rows_for_excel = []
+            for iid, entry in list(cart.items()):
+                it  = entry["item"]
+                qty = entry["qty"]
+                ws  = sum(qty * w.get("norm",1)*w.get("price",0) for w in it.get("works",[]))
+                ms  = sum(qty * m.get("norm",0)*m.get("price",0) for m in it.get("materials",[]))
+                rows_for_excel.append({"Раздел": it["section"], "Позиция": it["name"],
+                                       "Ед.": it["unit"], "Кол-во": qty,
+                                       "Работы, ₽": int(ws), "Материалы, ₽": int(ms),
+                                       "Итого, ₽": int(ws+ms)})
+
+                bc1, bc2, bc3, bc4 = st.columns([4, 1.5, 1.5, 0.7])
+                with bc1:
+                    st.markdown(f"**{it['name']}**")
+                    st.caption(f"{it['section']}")
+                with bc2:
+                    new_qty = st.number_input(
+                        it["unit"], min_value=0.0, value=float(qty),
+                        step=1.0, format="%.1f",
+                        key=f"cart_qty_{iid}",
+                        label_visibility="visible",
+                    )
+                    if abs(new_qty - qty) > 0.001:
+                        st.session_state["kp_cart"][iid]["qty"] = new_qty
+                        st.rerun()
+                with bc3:
+                    st.markdown(f"**{int(ws+ms):,} ₽**".replace(",", " "))
+                with bc4:
+                    if st.button("✖", key=f"rm_c_{iid}", help="Убрать из КП"):
+                        cart_remove(iid)
+                        st.rerun()
+
+            st.markdown("---")
+
+            # Финансовые параметры
+            with st.expander("💼 Доп. расходы и финансы", expanded=False):
+                e1, e2 = st.columns(2)
+                with e1:
+                    extra_delivery = st.number_input("Доставка, ₽",        min_value=0, step=1000, value=0, key="ex_del")
+                    extra_trash    = st.number_input("Вывоз мусора, ₽",    min_value=0, step=1000, value=0, key="ex_tr")
+                    extra_unf_pct  = st.number_input("Непредвиденные, %",  min_value=0, max_value=20, step=1, value=3, key="ex_unf")
+                with e2:
+                    overhead_pct   = st.number_input("Накладные, %",       min_value=0, max_value=50, step=1, value=10, key="fin_oh")
+                    profit_pct     = st.number_input("Прибыль, %",         min_value=0, max_value=50, step=1, value=5,  key="fin_pr")
+                    vat_on         = st.checkbox("НДС 22%", value=False, key="fin_vat")
+
+            # Финальный расчёт
+            base = total_work + total_mat
+            try:
+                unforeseen   = base * extra_unf_pct / 100
+                extra_total  = extra_delivery + extra_trash + unforeseen
+                overhead_sum = (base + extra_total) * overhead_pct / 100
+                profit_sum   = (base + extra_total) * profit_pct   / 100
+                tbv          = base + extra_total + overhead_sum + profit_sum
+                vat_sum      = tbv * 0.22 if vat_on else 0.0
+                grand        = tbv + vat_sum
+            except Exception:
+                grand = base
+
+            st.metric("**ИТОГО по КП**", f"{int(grand):,} ₽".replace(",", " "))
+
+            # Кнопки
+            btn1, btn2 = st.columns(2)
+            with btn1:
+                if st.button("📥 Сформировать Excel", type="primary",
+                             use_container_width=True, key="gen_excel"):
+                    try:
+                        fin_settings = {
+                            "overhead_pct": int(overhead_pct),
+                            "profit_pct":   int(profit_pct),
+                            "vat":          vat_on,
+                        }
+                        extra_costs = {
+                            "Доставка":               extra_delivery,
+                            "Вывоз мусора":           extra_trash,
+                            f"Непредвиденные ({extra_unf_pct}%)": int(unforeseen),
+                        }
+                        selected_items_ex = [e["item"] for e in cart.values()]
+                        quantities_ex     = {iid: e["qty"] for iid, e in cart.items()}
+
+                        excel_bytes = generate_excel(
+                            client=client, address=address, obj_name=obj_name,
+                            area=area_obj, proj_date=proj_date, manager=manager,
+                            selected_items=selected_items_ex, quantities=quantities_ex,
+                            extra_costs=extra_costs, fin_settings=fin_settings,
+                        )
+                        safe = re.sub(r'[^\w]', '_', client) or "КП"
+                        fname = f"КП_{safe}_{proj_date}.xlsx"
+                        st.session_state["excel_ready"]    = True
+                        st.session_state["excel_bytes"]    = excel_bytes
+                        st.session_state["excel_filename"] = fname
+
+                        # История
+                        record = {
+                            "id": uuid.uuid4().hex[:8], "date": str(proj_date),
+                            "client": client or "—", "address": address or "—",
+                            "obj_name": obj_name or "—", "total": int(grand),
+                            "items_count": len(cart),
+                            "cart_snapshot": {
+                                iid: {"item_id": iid, "name": e["item"]["name"],
+                                      "qty": e["qty"]}
+                                for iid, e in cart.items()
+                            },
+                            "fin_settings": fin_settings, "filename": fname,
+                        }
+                        st.session_state["kp_history"].append(record)
+                        hist_path = os.path.join(os.path.dirname(__file__), "kp_history.json")
+                        try:
+                            with open(hist_path, "w", encoding="utf-8") as f:
+                                json.dump(st.session_state["kp_history"], f,
+                                          ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
+                        st.success("КП сформирован!")
+                    except Exception as e:
+                        st.error(f"Ошибка: {e}")
+
+            with btn2:
+                if st.session_state.get("excel_ready"):
+                    st.download_button(
+                        "⬇️ Скачать",
+                        data=st.session_state["excel_bytes"],
+                        file_name=st.session_state["excel_filename"],
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="secondary", use_container_width=True, key="dl_excel",
+                    )
+
+            st.markdown("---")
+            if st.button("🗑 Очистить КП", use_container_width=True, key="clear_cart"):
+                st.session_state["kp_cart"] = {}
+                st.session_state["excel_ready"] = False
+                st.rerun()
+
+        else:
+            st.subheader("🛒 КП")
+            st.info("Найдите работы слева и нажмите ➕ Добавить")
+            st.markdown("Или запустите **мастер расчёта** — он автоматически подберёт всю цепочку работ с объёмами.")
+
+    st.markdown("---")
+
+    # ── Конструктор (расширенный режим) ─────────────────────────────────────
+    with st.expander("🔧 Конструктор: создать раздел или свою позицию", expanded=False):
         try:
             from streamlit_sortables import sort_items
             new_order = sort_items(
@@ -109,491 +501,139 @@ with tab_kp:
                 st.session_state["section_order"] = new_order
                 st.rerun()
         except ImportError:
-            # Fallback: кнопки ▲▼
-            section_order = st.session_state["section_order"]
-            for idx, sec in enumerate(section_order):
-                cu, cd, cn, ca = st.columns([0.5, 0.5, 5, 2.5])
+            st.caption("streamlit-sortables не установлен — порядок через ▲▼")
+            so = st.session_state["section_order"]
+            for idx, sec in enumerate(so):
+                cu, cd, cn = st.columns([0.5, 0.5, 8])
                 with cu:
                     if idx > 0 and st.button("▲", key=f"up_{idx}"):
-                        section_order[idx-1], section_order[idx] = section_order[idx], section_order[idx-1]
-                        st.rerun()
+                        so[idx-1], so[idx] = so[idx], so[idx-1]; st.rerun()
                 with cd:
-                    if idx < len(section_order)-1 and st.button("▼", key=f"dn_{idx}"):
-                        section_order[idx], section_order[idx+1] = section_order[idx+1], section_order[idx]
-                        st.rerun()
+                    if idx < len(so)-1 and st.button("▼", key=f"dn_{idx}"):
+                        so[idx], so[idx+1] = so[idx+1], so[idx]; st.rerun()
                 with cn:
                     st.write(sec)
-                with ca:
-                    if st.button("➕ Позицию", key=f"addp_{idx}", use_container_width=True):
-                        st.session_state["adding_to_sec"] = sec if st.session_state["adding_to_sec"] != sec else None
-                        st.rerun()
 
         st.markdown("---")
-
-        # Кнопки добавления позиции (под каждым разделом, через selectbox)
-        add_sec = st.selectbox(
-            "Добавить позицию в раздел:",
-            ["— выбрать —"] + st.session_state["section_order"],
-            key="add_pos_sec_select",
-        )
-        if add_sec != "— выбрать —":
-            fc1, fc2, fc3, fc4 = st.columns([3, 1.2, 1.2, 1.5])
-            with fc1: new_name = st.text_input("Название работы", key="new_pos_name")
-            with fc2: new_unit = st.text_input("Единица", value="кв.м.", key="new_pos_unit")
-            with fc3: new_price = st.number_input("Цена ₽/ед.", min_value=0, step=100, key="new_pos_price")
-            with fc4: new_sub = st.text_input("Подраздел", placeholder="опционально", key="new_pos_sub")
-            if st.button("✅ Добавить позицию", type="primary"):
-                if new_name.strip():
-                    ci = {
-                        "id": f"custom_{uuid.uuid4().hex[:8]}",
-                        "section": add_sec,
-                        "subsection": new_sub.strip() or "Пользовательские позиции",
-                        "name": new_name.strip(),
-                        "unit": new_unit.strip() or "шт.",
-                        "works": [{"name": new_name.strip(), "unit": new_unit.strip() or "шт.",
-                                   "price": int(new_price), "norm": 1.0}],
-                        "materials": [],
-                    }
-                    st.session_state["custom_items"].append(ci)
-                    all_items_combined = all_items + st.session_state["custom_items"]
-                    st.success(f"Позиция «{new_name}» добавлена!")
-                    st.rerun()
-                else:
-                    st.warning("Введите название")
-
-        # Список пользовательских позиций
-        if st.session_state["custom_items"]:
-            st.markdown("---")
-            st.markdown(f"**Мои позиции ({len(st.session_state['custom_items'])} шт.):**")
-            for ci_idx, ci in enumerate(st.session_state["custom_items"]):
-                price_show = ci["works"][0]["price"] if ci["works"] else 0
-                cc1, cc2 = st.columns([8, 1])
-                with cc1:
-                    st.caption(f"[{ci['section']}] {ci['name']} — {price_show:,} ₽/{ci['unit']}")
-                with cc2:
-                    if st.button("🗑", key=f"del_ci_{ci_idx}"):
-                        st.session_state["custom_items"].pop(ci_idx)
-                        st.rerun()
-
-        st.markdown("---")
-        # Создать новый раздел
-        st.markdown("**Создать новый раздел:**")
+        st.markdown("**Новый раздел:**")
         ns1, ns2 = st.columns([4, 1.5])
         with ns1:
-            new_sec_name = st.text_input("Название раздела", placeholder="Например: Благоустройство",
-                                         key="new_sec_name", label_visibility="collapsed")
+            new_sec_name = st.text_input("Название раздела", key="new_sec_name",
+                                         label_visibility="collapsed",
+                                         placeholder="Например: Благоустройство")
         with ns2:
             if st.button("Создать ➕", type="primary", use_container_width=True):
                 name = new_sec_name.strip()
                 if name and name not in st.session_state["section_order"]:
                     st.session_state["section_order"].append(name)
                     st.rerun()
-                elif name:
-                    st.warning("Уже существует")
 
         if st.button("🔄 Сбросить порядок к стандартному"):
             st.session_state["section_order"] = list(DEFAULT_SECTION_ORDER)
             st.rerun()
-
-    st.markdown("---")
-
-    # ── Шаг 1: Выбор работ + Умный помощник ─────────────────────────────────
-    st.subheader("Шаг 1 — Выберите виды работ")
-    st.caption("✓ раздел → подразделы → ✓ позиции  |  🧮 — умный расчёт объёмов и цепочек работ")
-
-    sections_with_items = [
-        s for s in st.session_state["section_order"]
-        if any(i["section"] == s for i in all_items_combined)
-    ]
-
-    selected_ids = list(st.session_state.get("chain_checked", set()))
-
-    for section in sections_with_items:
-        col_sec, col_calc = st.columns([7, 1.5])
-        with col_sec:
-            sec_checked = st.checkbox(f"**{section}**", key=f"sec_{section}")
-        with col_calc:
-            if section in CHAINS:
-                btn_label = "🧮 Мастер"
-                if st.button(btn_label, key=f"chain_btn_{section}", use_container_width=True):
-                    toggle_key = f"chain_open_{section}"
-                    st.session_state[toggle_key] = not st.session_state.get(toggle_key, False)
-                    st.rerun()
-
-        # ── Умный мастер расчёта ──────────────────────────────────────────
-        if section in CHAINS and st.session_state.get(f"chain_open_{section}"):
-            chain_def = CHAINS[section]
-            with st.container():
-                st.markdown(f"#### {chain_def['emoji']} Мастер: {chain_def['label']}")
-
-                # Вводные параметры
-                inp_vals = {}
-                adv_visible = st.checkbox("Показать расширенные параметры", key=f"chain_adv_{section}")
-                inp_cols = st.columns(min(len(chain_def["inputs"]), 4))
-                for i, inp in enumerate(chain_def["inputs"]):
-                    if inp.get("advanced") and not adv_visible:
-                        inp_vals[inp["id"]] = inp["default"]
-                        continue
-                    with inp_cols[i % len(inp_cols)]:
-                        val = st.number_input(
-                            f"{inp['label']}, {inp['unit']}",
-                            min_value=0.0, value=float(inp["default"]),
-                            step=0.5, format="%.2f",
-                            key=f"chain_inp_{section}_{inp['id']}",
-                        )
-                        inp_vals[inp["id"]] = val
-
-                # Вычисленные значения
-                computed_vals = dict(inp_vals)
-                if chain_def.get("computed"):
-                    st.markdown("**📐 Рассчитанные объёмы:**")
-                    cv_cols = st.columns(min(len(chain_def["computed"]), 4))
-                    for ci2, (cid, (expr, unit, clabel)) in enumerate(chain_def["computed"].items()):
-                        try:
-                            val = eval(expr, {"__builtins__": {}}, {**computed_vals, "max": max, "min": min, "round": round})
-                        except Exception:
-                            val = 0.0
-                        computed_vals[cid] = val
-                        with cv_cols[ci2 % len(cv_cols)]:
-                            st.metric(f"{clabel}", f"{val} {unit}")
-
-                # Найденные позиции справочника
-                chain_matches = find_chain_items(chain_def, all_items_combined)
-                if chain_matches:
-                    st.markdown("**📋 Цепочка работ — выберите нужные:**")
-                    for match in chain_matches:
-                        item = match["item"]
-                        qty_id = match["qty_id"]
-                        note = match["note"]
-                        qty_val = computed_vals.get(qty_id, 0.0) if qty_id else 0.0
-                        iid = item["id"]
-
-                        cm1, cm2, cm3 = st.columns([0.5, 5, 2])
-                        with cm1:
-                            checked_now = st.checkbox(
-                                "", key=f"chain_chk_{section}_{iid}",
-                                value=(iid in st.session_state["chain_checked"])
-                            )
-                        with cm2:
-                            price_show = sum(w["price"] * w["norm"] for w in item.get("works", []))
-                            st.write(f"**{item['name']}** — {price_show:,.0f} ₽/{item['unit']}")
-                            st.caption(f"{item['section']} / {item.get('subsection','')}")
-                        with cm3:
-                            qty_edit = st.number_input(
-                                f"{item['unit']} {('('+note+')') if note else ''}",
-                                min_value=0.0, value=float(qty_val),
-                                step=0.5, format="%.2f",
-                                key=f"chain_qty_{section}_{iid}",
-                            )
-                            st.session_state["chain_qtys"][iid] = qty_edit
-
-                        if checked_now:
-                            st.session_state["chain_checked"].add(iid)
-                        else:
-                            st.session_state["chain_checked"].discard(iid)
-
-                    if st.button(f"✅ Принять выбранные позиции мастера → в КП",
-                                 key=f"chain_accept_{section}", type="primary"):
-                        st.session_state[f"chain_open_{section}"] = False
-                        st.success("Позиции добавлены! Прокрутите вниз к Шагу 2.")
-                        st.rerun()
-                else:
-                    st.info("Совпадений в справочнике не найдено — выберите позиции вручную ниже.")
-
-                st.markdown("---")
-
-        # ── Обычный чекбокс-список ────────────────────────────────────────
-        if sec_checked:
-            subs = []
-            for i in all_items_combined:
-                if i["section"] == section:
-                    sub = i.get("subsection") or "Общее"
-                    if sub not in subs:
-                        subs.append(sub)
-            for subsection in subs:
-                items_in_sub = [
-                    i for i in all_items_combined
-                    if i["section"] == section and (i.get("subsection") or "Общее") == subsection
-                ]
-                with st.expander(f"↳ {subsection}", expanded=True):
-                    for item in items_in_sub:
-                        iid = item["id"]
-                        approx_price = sum(w["price"] * w["norm"] for w in item.get("works", []))
-                        is_custom = iid.startswith("custom_")
-                        is_chain  = iid in st.session_state["chain_checked"]
-                        marker = " 🟡" if is_custom else (" ⚡" if is_chain else "")
-                        label = (f"{item['name']}{marker}"
-                                 f"  —  **{approx_price:,.0f} ₽ / {item['unit']}**")
-                        checked = st.checkbox(label, key=f"item_{iid}",
-                                              value=is_chain)
-                        if checked and iid not in selected_ids:
-                            selected_ids.append(iid)
-                        elif not checked and iid in selected_ids:
-                            selected_ids.remove(iid)
-
-    item_map = {i["id"]: i for i in all_items_combined}
-    selected_items = [item_map[iid] for iid in selected_ids if iid in item_map]
-
-    st.markdown("---")
-
-    # ── Шаг 2: Объёмы ────────────────────────────────────────────────────────
-    quantities: dict = {}
-    if selected_items:
-        st.subheader("Шаг 2 — Объёмы работ")
-        cur_sec = cur_sub = None
-        for item in selected_items:
-            if item["section"] != cur_sec:
-                cur_sec = item["section"]
-                st.markdown(f"**{cur_sec}**")
-            sub = item.get("subsection") or "Общее"
-            if sub != cur_sub:
-                cur_sub = sub
-                st.markdown(f"*{sub}*")
-            c1, c2 = st.columns([4, 1])
-            with c1:
-                st.write(f"• {item['name']}")
-            with c2:
-                # Подставляем значение из мастера если есть
-                default_qty = float(st.session_state["chain_qtys"].get(item["id"], 0.0))
-                qty = st.number_input(
-                    item["unit"], min_value=0.0, step=0.5, format="%.2f",
-                    value=default_qty,
-                    key=f"qty_{item['id']}", label_visibility="visible",
-                )
-            quantities[item["id"]] = qty
-        st.markdown("---")
-
-    # ── Шаг 3: Доп. расходы и финансы ───────────────────────────────────────
-    if selected_items:
-        with st.expander("💼 Дополнительные расходы", expanded=False):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                extra_delivery = st.number_input("Доставка, ₽",          min_value=0, step=1000, value=0, key="ex_del")
-                extra_trash    = st.number_input("Вывоз мусора, ₽",       min_value=0, step=1000, value=0, key="ex_tr")
-            with c2:
-                extra_unf_pct  = st.number_input("Непредвиденные, %",     min_value=0, max_value=20, step=1, value=3, key="ex_unf")
-                extra_cover    = st.number_input("Укрывные работы, ₽",    min_value=0, step=500,  value=0, key="ex_cov")
-            with c3:
-                extra_elec     = st.number_input("Врем. электроснабж., ₽",min_value=0, step=500,  value=0, key="ex_el")
-                extra_water    = st.number_input("Врем. водоснабж., ₽",   min_value=0, step=500,  value=0, key="ex_wt")
-
-        with st.expander("📊 Финансовые параметры", expanded=True):
-            fc1, fc2, fc3 = st.columns(3)
-            with fc1:
-                overhead_pct = st.number_input("Накладные, %", min_value=0, max_value=50, step=1, value=10, key="fin_oh")
-            with fc2:
-                profit_pct   = st.number_input("Прибыль, %",  min_value=0, max_value=50, step=1, value=5,  key="fin_pr")
-            with fc3:
-                vat_on = st.checkbox("НДС 22%", value=False, key="fin_vat")
-
-        fin_settings = {"overhead_pct": int(overhead_pct), "profit_pct": int(profit_pct), "vat": vat_on}
-        st.markdown("---")
-
-    # ── Итог ─────────────────────────────────────────────────────────────────
-    if selected_items and any(quantities.get(i["id"], 0) > 0 for i in selected_items):
-        st.subheader("Шаг 3 — Итог")
-
-        total_work = total_mat = 0.0
-        rows_prev = []
-        for item in selected_items:
-            qty = quantities.get(item["id"], 0)
-            ws = sum(qty * w.get("norm",1) * w.get("price",0) for w in item.get("works", []))
-            ms = sum(qty * m.get("norm",0) * m.get("price",0) for m in item.get("materials", []))
-            total_work += ws; total_mat += ms
-            rows_prev.append({
-                "Раздел": item["section"], "Позиция": item["name"],
-                "Ед.": item["unit"], "Кол-во": qty,
-                "Работы, ₽": int(ws), "Материалы, ₽": int(ms), "Итого, ₽": int(ws+ms),
-            })
-
-        try:
-            base = total_work + total_mat
-            unforeseen = base * extra_unf_pct / 100
-            extra_total = extra_delivery + extra_trash + extra_cover + extra_elec + extra_water + unforeseen
-        except Exception:
-            unforeseen = extra_total = 0.0
-
-        subtotal = total_work + total_mat + extra_total
-        try:
-            overhead_sum = subtotal * fin_settings["overhead_pct"] / 100
-            profit_sum   = subtotal * fin_settings["profit_pct"]   / 100
-        except Exception:
-            overhead_sum = profit_sum = 0.0
-        tbv = subtotal + overhead_sum + profit_sum
-        vat_sum = tbv * 0.22 if fin_settings.get("vat") else 0.0
-        grand = tbv + vat_sum
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Работы",       f"{int(total_work):,} ₽".replace(",", " "))
-        m2.metric("Материалы",    f"{int(total_mat):,} ₽".replace(",", " "))
-        m3.metric("Доп. расходы", f"{int(extra_total):,} ₽".replace(",", " "))
-        m4.metric("ИТОГО",        f"{int(grand):,} ₽".replace(",", " "))
-
-        import pandas as pd
-        st.dataframe(pd.DataFrame(rows_prev), use_container_width=True, hide_index=True)
-        st.markdown("---")
-
-        bc1, bc2 = st.columns([1, 3])
-        with bc1:
-            if st.button("📥 Сформировать Excel", type="primary", use_container_width=True, key="gen_excel"):
-                try:
-                    extra_costs = {
-                        "Доставка материалов": extra_delivery,
-                        "Вывоз строительного мусора": extra_trash,
-                        "Укрывные работы": extra_cover,
-                        "Временное электроснабжение": extra_elec,
-                        "Временное водоснабжение": extra_water,
-                        f"Непредвиденные ({extra_unf_pct}%)": int(unforeseen),
-                    }
-                    excel_bytes = generate_excel(
-                        client=client, address=address, obj_name=obj_name,
-                        area=area_obj, proj_date=proj_date, manager=manager,
-                        selected_items=selected_items, quantities=quantities,
-                        extra_costs=extra_costs, fin_settings=fin_settings,
-                    )
-                    safe = re.sub(r'[^\w]', '_', client) or "КП"
-                    fname = f"КП_{safe}_{proj_date}.xlsx"
-                    st.session_state["excel_ready"]    = True
-                    st.session_state["excel_bytes"]    = excel_bytes
-                    st.session_state["excel_filename"] = fname
-
-                    # Сохраняем в историю
-                    record = {
-                        "id": uuid.uuid4().hex[:8],
-                        "date": str(proj_date),
-                        "client": client or "—",
-                        "address": address or "—",
-                        "obj_name": obj_name or "—",
-                        "total": int(grand),
-                        "items_count": len(selected_items),
-                        "quantities": {k: v for k, v in quantities.items() if v > 0},
-                        "selected_ids": [i["id"] for i in selected_items],
-                        "fin_settings": fin_settings,
-                        "filename": fname,
-                    }
-                    st.session_state["kp_history"].append(record)
-                    # Пишем в файл
-                    hist_path = os.path.join(os.path.dirname(__file__), "kp_history.json")
-                    try:
-                        with open(hist_path, "w", encoding="utf-8") as f:
-                            json.dump(st.session_state["kp_history"], f, ensure_ascii=False, indent=2)
-                    except Exception:
-                        pass
-                    st.success("КП сформирован и сохранён в историю!")
-                except Exception as e:
-                    st.error(f"Ошибка: {e}")
-
-        with bc2:
-            if st.session_state.get("excel_ready"):
-                st.download_button(
-                    "⬇️ Скачать КП",
-                    data=st.session_state["excel_bytes"],
-                    file_name=st.session_state["excel_filename"],
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="secondary", use_container_width=True, key="dl_excel",
-                )
-
-    elif not selected_items:
-        st.info("👆 Выберите виды работ или воспользуйтесь 🤖 вкладкой «Загрузить ТЗ»")
-    else:
-        st.info("👆 Введите объёмы работ для расчёта")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TAB 2 — AI-РАЗБОР ТЗ
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_tz:
-    st.subheader("🤖 Загрузить ТЗ/смету — AI автоматически разберёт позиции")
-    st.caption("Поддерживаемые форматы: Excel (.xlsx), PDF, Word (.docx)")
+    st.subheader("🤖 Загрузить ТЗ — AI разберёт и перенесёт в КП")
+    st.caption("Форматы: Excel (.xlsx), PDF, Word (.docx)")
 
-    # Ключ берётся из secrets.toml (локально) или Streamlit Cloud Secrets
     api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
 
     uploaded = st.file_uploader(
-        "Перетащите файл ТЗ или кликните для выбора",
+        "Перетащите файл ТЗ",
         type=["xlsx", "xls", "pdf", "docx"],
         key="tz_file",
     )
 
     if uploaded and api_key:
         if st.button("🚀 Запустить AI-разбор", type="primary"):
-            with st.spinner("AI читает документ и ищет позиции справочника…"):
+            with st.spinner("Читаю документ и ищу позиции…"):
                 try:
                     from ai_parser import extract_text, call_claude_api, match_items
                     raw_text = extract_text(uploaded.read(), uploaded.name)
                     if not raw_text.strip():
-                        st.error("Не удалось извлечь текст из файла.")
+                        st.error("Не удалось извлечь текст.")
                     else:
-                        parsed = call_claude_api(raw_text, api_key)
+                        parsed  = call_claude_api(raw_text, api_key)
                         matched = match_items(parsed, all_items_combined)
                         st.session_state["tz_matched"] = matched
-                        st.success(f"AI извлёк {len(parsed)} позиций. Проверьте результат ниже.")
+                        st.success(f"AI извлёк {len(parsed)} позиций. Проверьте ниже.")
                 except json.JSONDecodeError:
-                    st.error("AI не смог вернуть корректный JSON. Попробуйте ещё раз.")
+                    st.error("AI вернул некорректный JSON. Попробуйте ещё раз.")
                 except Exception as e:
                     st.error(f"Ошибка: {e}")
-
     elif not uploaded:
-        st.info("Загрузите файл ТЗ для запуска AI-разбора.")
+        st.info("Загрузите файл ТЗ")
 
-    # ── Результаты разбора ───────────────────────────────────────────────────
     if st.session_state.get("tz_matched"):
         matched = st.session_state["tz_matched"]
         st.markdown("---")
-        st.markdown(f"### Результат разбора ({len(matched)} позиций)")
-        st.caption("🟢 — высокое совпадение | 🟡 — среднее | 🔴 — не найдено. Снимите галочку чтобы исключить позицию.")
-
-        accepted_ids: list[str] = []
-        accepted_qtys: dict = {}
+        st.markdown(f"### Результат ({len(matched)} позиций)")
+        st.caption("🟢 высокое совпадение · 🟡 среднее · 🔴 не найдено")
 
         for idx, m in enumerate(matched):
-            iid = m["matched_item"]["id"] if m["matched_item"] else None
-            score = m["score"]
-            color = "🟢" if score >= 0.6 else ("🟡" if score >= 0.35 else "🔴")
+            iid     = m["matched_item"]["id"] if m["matched_item"] else None
+            score   = m["score"]
+            color   = "🟢" if score >= 0.6 else ("🟡" if score >= 0.35 else "🔴")
+            in_cart = iid in st.session_state["kp_cart"] if iid else False
 
-            rc1, rc2, rc3, rc4, rc5 = st.columns([0.5, 3, 3, 1.5, 1.5])
-            with rc1:
-                use = st.checkbox("", value=(score >= 0.35 and iid is not None), key=f"tz_use_{idx}")
-            with rc2:
+            mc1, mc2, mc3, mc4, mc5 = st.columns([0.5, 3.5, 3, 1.5, 1.5])
+            with mc1:
+                use = st.checkbox("", value=(score >= 0.35 and iid is not None),
+                                  key=f"tz_use_{idx}")
+            with mc2:
                 st.write(f"{color} **{m['parsed_name']}**")
                 st.caption(f"ТЗ: {m['parsed_unit']}")
-            with rc3:
+            with mc3:
                 if m["matched_item"]:
-                    match_name = m["matched_item"]["name"]
-                    match_sec  = m["matched_item"]["section"]
-                    st.write(f"→ {match_name}")
-                    st.caption(f"{match_sec} | score: {score}")
+                    st.write(f"→ {m['matched_item']['name']}")
+                    st.caption(f"{m['matched_item']['section']} | score: {score}")
                 else:
-                    st.write("→ *не найдено в справочнике*")
-            with rc4:
-                qty_default = float(m["qty"]) if m["qty"] is not None else 0.0
+                    st.write("→ *нет в справочнике*")
+                # Возможность заменить матч
+                override_names = ["— оставить —"] + [i["name"] for i in all_items_combined[:200]]
+                override = st.selectbox("", override_names, key=f"tz_ov_{idx}",
+                                        label_visibility="collapsed")
+                if override != "— оставить —":
+                    iid = next((i["id"] for i in all_items_combined if i["name"] == override), iid)
+            with mc4:
+                qty_default = float(m["qty"]) if m["qty"] else 0.0
                 qty_val = st.number_input(
                     m["matched_item"]["unit"] if m["matched_item"] else "ед.",
                     min_value=0.0, value=qty_default, step=0.5, format="%.2f",
                     key=f"tz_qty_{idx}",
                 )
-            with rc5:
-                # Заменить совпадение вручную
-                all_names = ["— оставить —"] + [i["name"] for i in all_items_combined]
-                override = st.selectbox("Заменить на:", all_names,
-                                        key=f"tz_override_{idx}",
-                                        label_visibility="collapsed")
-                if override != "— оставить —":
-                    iid = next((i["id"] for i in all_items_combined if i["name"] == override), iid)
-
-            if use and iid:
-                accepted_ids.append(iid)
-                accepted_qtys[iid] = qty_val
+            with mc5:
+                if in_cart:
+                    st.markdown("✅ в КП")
+                else:
+                    if use and iid:
+                        it = item_map.get(iid)
+                        if it and st.button("➕ В КП", key=f"tz_add_{idx}", use_container_width=True):
+                            cart_add(it, qty_val)
+                            st.rerun()
 
         st.markdown("---")
-        if st.button("✅ Перенести в КП (Шаг 1 → 2)", type="primary", key="tz_accept"):
-            # Объединяем с уже выбранными через chain
-            for iid in accepted_ids:
-                st.session_state["chain_checked"].add(iid)
-            for iid, qty in accepted_qtys.items():
-                st.session_state["chain_qtys"][iid] = qty
+        if st.button("✅ Добавить все отмеченные в КП", type="primary", key="tz_accept_all"):
+            for idx, m in enumerate(matched):
+                use_key = f"tz_use_{idx}"
+                qty_key = f"tz_qty_{idx}"
+                ov_key  = f"tz_ov_{idx}"
+                if st.session_state.get(use_key, False):
+                    iid = m["matched_item"]["id"] if m["matched_item"] else None
+                    ov  = st.session_state.get(ov_key, "— оставить —")
+                    if ov != "— оставить —":
+                        iid = next((i["id"] for i in all_items_combined if i["name"] == ov), iid)
+                    qty = st.session_state.get(qty_key, 0.0)
+                    if iid and qty > 0:
+                        it = item_map.get(iid)
+                        if it:
+                            cart_add(it, qty)
             st.session_state["tz_matched"] = None
-            st.success("Позиции перенесены! Перейдите на вкладку 📝 Составить КП → Шаг 2.")
+            st.success("Позиции добавлены! Перейдите в 📝 Составить КП.")
             st.rerun()
 
 
@@ -601,19 +641,18 @@ with tab_tz:
 # TAB 3 — ИСТОРИЯ КП
 # ════════════════════════════════════════════════════════════════════════════════
 with tab_hist:
-    st.subheader("📋 История сформированных КП")
-    st.caption("КП сохраняются автоматически при нажатии «Сформировать Excel». История не удаляется.")
+    st.subheader("📋 История КП")
+    st.caption("Каждый сформированный Excel автоматически сохраняется. История не удаляется.")
 
     history = st.session_state.get("kp_history", [])
-
     if not history:
-        st.info("Здесь будут отображаться все сформированные КП. Пока истории нет.")
+        st.info("История пуста — сформируйте первый КП.")
     else:
         st.markdown(f"Всего КП: **{len(history)}**")
         for rec in reversed(history):
+            total_fmt = f"{rec['total']:,} ₽".replace(",", " ")
             with st.expander(
-                f"📄 {rec['date']} | {rec['client']} | {rec['obj_name']} | "
-                f"{rec['total']:,} ₽".replace(",", " "),
+                f"📄 {rec['date']}  |  {rec['client']}  |  {rec['obj_name']}  |  {total_fmt}",
                 expanded=False,
             ):
                 hc1, hc2 = st.columns(2)
@@ -623,27 +662,25 @@ with tab_hist:
                     st.write(f"**Объект:** {rec['obj_name']}")
                     st.write(f"**Дата:** {rec['date']}")
                 with hc2:
-                    st.write(f"**Итого:** {rec['total']:,} ₽".replace(",", " "))
+                    st.write(f"**Итого:** {total_fmt}")
                     st.write(f"**Позиций:** {rec['items_count']}")
                     st.write(f"**НДС:** {'да' if rec['fin_settings'].get('vat') else 'нет'}")
 
-                # Кнопка загрузить этот КП обратно
-                if st.button(f"🔄 Продолжить работу с этим КП", key=f"hist_load_{rec['id']}"):
-                    # Восстанавливаем состояние
-                    st.session_state["chain_checked"] = set(rec["selected_ids"])
-                    st.session_state["chain_qtys"]    = rec["quantities"]
-                    st.success("КП восстановлен. Перейдите на вкладку 📝 Составить КП.")
+                if st.button("🔄 Восстановить этот КП", key=f"hist_load_{rec['id']}"):
+                    new_cart = {}
+                    for iid, snap in rec.get("cart_snapshot", {}).items():
+                        it = item_map.get(iid)
+                        if it:
+                            new_cart[iid] = {"item": it, "qty": snap["qty"]}
+                    st.session_state["kp_cart"] = new_cart
+                    st.success("КП восстановлен. Перейдите в 📝 Составить КП.")
                     st.rerun()
 
     st.markdown("---")
-    st.markdown("**ℹ️ Про постоянное хранение истории:**")
     st.info(
-        "Сейчас история хранится в файле `kp_history.json` и в памяти сессии. "
-        "Для надёжного хранения между разными устройствами нужно подключить Google Sheets. "
-        "Инструкция: [создать Service Account в Google Cloud Console](https://console.cloud.google.com/), "
-        "добавить JSON-ключ в Streamlit Secrets как `GOOGLE_SERVICE_ACCOUNT`, "
-        "создать таблицу и поделиться ею с email сервисного аккаунта."
+        "Для хранения истории на Streamlit Cloud: добавьте Google Service Account "
+        "в Streamlit Secrets → подключим Google Sheets."
     )
 
 st.markdown("---")
-st.caption("ООО «Ремкон» · Калькулятор КП v1.3 · remkon.ru")
+st.caption("ООО «Ремкон» · Калькулятор КП v2.0 · remkon.ru")
