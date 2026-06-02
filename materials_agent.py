@@ -244,15 +244,24 @@ def suggest_materials(
 
     existing_text = ""
     if existing_materials:
-        lines = [f"  - {m['name']} {m.get('qty_total', '?')} {m.get('unit', '')} [{m.get('variant', '')}]"
-                 for m in existing_materials]
-        existing_text = "Уже выбранные материалы:\n" + "\n".join(lines) + "\n\n"
+        _ex_lines = []
+        for _m in existing_materials:
+            _brand = _m.get("brand") or _m.get("name", "?")
+            _qty   = _m.get("qty_total", "?")
+            _unit  = _m.get("unit", "")
+            _var   = _m.get("variant", "")
+            _ex_lines.append(f"  - {_brand} — {_qty} {_unit} [{_var}]")
+        existing_text = (
+            "УЖЕ ДОБАВЛЕНО (НЕ ДУБЛИРОВАТЬ эти позиции!\n"
+            "Добавляй только то чего здесь нет, или явно напиши что надо изменить):\n"
+            + "\n".join(_ex_lines) + "\n\n"
+        )
 
     # Включаем память о прошлых правках
     memory_text = ""
     if memory:
         mem_lines = [
-            f"  - {m['material']} ({m.get('unit','')}) — наша цена: {m.get('purchase_price',0)} ₽, клиент: {m.get('client_price',0)} ₽"
+            f"  - {m.get('name', m.get('material','?'))} ({m.get('unit','')}) — наша закупка: {m.get('purchase_price',0)} ₽, клиент: {m.get('client_price',0)} ₽"
             for m in memory[-15:]
         ]
         memory_text = "НАШИ ЗАКУПОЧНЫЕ ЦЕНЫ (из прошлых смет):\n" + "\n".join(mem_lines) + "\n\n"

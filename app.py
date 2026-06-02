@@ -1383,9 +1383,14 @@ with tab_kp:
                             memory=_mem2,
                         )
                     st.session_state[_chat_key].append({"role": "user", "text": _user_mat_input.strip()})
-                    _existing_names = {m.get("name","") for m in st.session_state.get(_mat_key, [])}
+                    # Дедупликация — нормализуем имена (lower+strip) + brand
+                    def _norm_mat_name(m):
+                        b = (m.get("brand") or "").lower().strip()
+                        n = (m.get("name") or "").lower().strip()
+                        return b or n
+                    _existing_names = {_norm_mat_name(m) for m in st.session_state.get(_mat_key, [])}
                     for _new_m in _result.get("materials", []):
-                        if _new_m.get("name") not in _existing_names:
+                        if _norm_mat_name(_new_m) not in _existing_names:
                             # Авто-поиск цены если не задана
                             if _new_m.get("client_price", 0) == 0 and _gem_key:
                                 from ai_parser import get_market_price
@@ -1400,7 +1405,7 @@ with tab_kp:
                             if _new_m.get("client_price", 0) == 0 and _new_m.get("purchase_price", 0) > 0:
                                 _new_m["client_price"] = int(_new_m["purchase_price"] * (1 + _mat_markup / 100))
                             st.session_state[_mat_key].append(_new_m)
-                            _existing_names.add(_new_m.get("name",""))
+                            _existing_names.add(_norm_mat_name(_new_m))
                     _reply = _result.get("agent_comment", "")
                     _q = _result.get("clarifying_question")
                     if _q:
