@@ -322,7 +322,7 @@ with tab_kp:
         # Корзина на всю ширину, поиск свёрнут
         left_col, right_col = st.columns([0.001, 1], gap="small")
     else:
-        left_col, right_col = st.columns([5, 4], gap="large")
+        left_col, right_col = st.columns([4, 5], gap="large")  # корзина шире поиска
 
     # ── ЛЕВАЯ КОЛОНКА: ПОИСК ────────────────────────────────────────────────
     with left_col:
@@ -634,6 +634,7 @@ with tab_kp:
                                        "Работы, ₽": int(ws), "Материалы, ₽": int(ms),
                                        "Итого, ₽": int(ws+ms)})
 
+                # ── Карточка позиции ──────────────────────────────────────
                 bc1, bc2, bc3, bc4 = st.columns([4, 1.5, 1.5, 0.7])
                 with bc1:
                     st.markdown(f"**{it['name']}**")
@@ -655,7 +656,68 @@ with tab_kp:
                         cart_remove(iid)
                         st.rerun()
 
-                # ── Блок материалов ──────────────────────────────────────────
+                # ── Комментарий Василича + мини-чат прямо под позицией ────────
+                _f_report = st.session_state.get("foreman_report") or {}
+                _f_item_note = None
+                for _u in _f_report.get("unclear_positions", []):
+                    if it["name"].lower() in _u.get("name","").lower():
+                        _f_item_note = f"⚠️ {_u.get('issue','')} — {_u.get('clarification_needed','')}"
+                        break
+                if not _f_item_note:
+                    for _mi in _f_report.get("missing_items", []):
+                        if it["name"].lower() in _mi.get("triggered_by","").lower():
+                            _f_item_note = f"➕ Не хватает: {_mi.get('missing','')}"
+                            break
+                if _f_item_note:
+                    st.markdown(
+                        f'<div style="font-size:12px;color:#E07B00;padding:3px 8px;'
+                        f'background:#FFF3DC;border-radius:6px;margin:2px 0">'
+                        f'🔧 {_f_item_note}</div>',
+                        unsafe_allow_html=True
+                    )
+
+                # Мини-чат с Василичем по этой позиции
+                _vasil_key = f"vasil_q_{iid}"
+                _vasil_chat_key = f"vasil_chat_{iid}"
+                if _vasil_chat_key not in st.session_state:
+                    st.session_state[_vasil_chat_key] = []
+                _vcol1, _vcol2 = st.columns([4, 1.5])
+                with _vcol1:
+                    _vasil_q = st.text_input(
+                        "Спросить Василича",
+                        placeholder="Сколько тут нужно материала? Не дорого ли?",
+                        key=_vasil_key,
+                        label_visibility="collapsed",
+                    )
+                with _vcol2:
+                    if st.button("💬 Василич", key=f"vasil_ask_{iid}", use_container_width=True):
+                        _vapi = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY",""))
+                        if _vasil_q.strip() and _vapi:
+                            import anthropic as _anth
+                            _vc = _anth.Anthropic(api_key=_vapi)
+                            _vasil_prompt = (
+                                f"ПОЗИЦИЯ КП: {it['name']} | {qty} {it['unit']} | "
+                                f"{int(ws):,} ₽ работы | {int(ms):,} ₽ материалы\n"
+                                f"ВОПРОС: {_vasil_q.strip()}"
+                            )
+                            from foreman import FOREMAN_SYSTEM
+                            _vm = _vc.messages.create(
+                                model="claude-haiku-4-5-20251001",
+                                max_tokens=400,
+                                system=FOREMAN_SYSTEM + "\nОтвечай коротко — 2-4 предложения. Без JSON.",
+                                messages=[{"role":"user","content":_vasil_prompt}],
+                            )
+                            _vasil_ans = _vm.content[0].text.strip()
+                            st.session_state[_vasil_chat_key].append(
+                                {"q": _vasil_q.strip(), "a": _vasil_ans}
+                            )
+                            st.rerun()
+
+                for _vc_msg in st.session_state.get(_vasil_chat_key, []):
+                    st.caption(f"❓ {_vc_msg['q']}")
+                    st.info(f"🔧 {_vc_msg['a']}")
+
+                # ── Блок материалов ПРЯМО ПОД ПОЗИЦИЕЙ ──────────────────────
                 mat_key  = f"mat_{iid}"
                 chat_key = f"mat_chat_{iid}"
                 if mat_key not in st.session_state:
