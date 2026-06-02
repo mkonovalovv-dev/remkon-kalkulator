@@ -221,6 +221,8 @@ if "custom_items"   not in st.session_state:
     st.session_state["custom_items"]   = []
 if "kp_cart"        not in st.session_state:
     st.session_state["kp_cart"]        = {}   # {item_id: {"item": ..., "qty": float}}
+if "auto_fix_result"  not in st.session_state: st.session_state["auto_fix_result"]  = None
+if "last_tz_text"    not in st.session_state: st.session_state["last_tz_text"]    = ""
 if "active_mat_iid" not in st.session_state:
     st.session_state["active_mat_iid"] = None  # открытый редактор материалов
 if "works_expanded" not in st.session_state:
@@ -1049,71 +1051,107 @@ with tab_kp:
                         except Exception as e:
                             st.error(f"Ошибка прораба: {e}")
 
-            # ── Отчёт прораба ─────────────────────────────────────────────
+            # ── Отчёт прораба (структурированный) ────────────────────────
             report = st.session_state.get("foreman_report")
             if report:
                 verdict = report.get("verdict", "")
                 summary = report.get("summary", "")
 
-                # Цвет по вердикту
+                # Если summary выглядит как JSON — это fallback, парсим заново
+                if summary.strip().startswith("{"):
+                    import re as _re2
+                    _jm2 = _re2.search(r"\{[\s\S]*\}", summary)
+                    if _jm2:
+                        try:
+                            _r2 = json.loads(_jm2.group())
+                            report = _r2
+                            st.session_state["foreman_report"] = _r2
+                            verdict = _r2.get("verdict","")
+                            summary = _r2.get("summary","")
+                        except Exception:
+                            summary = summary[:300]  # обрезаем если JSON не парсится
+
+                unclear   = report.get("unclear_positions", [])
+                missing   = report.get("missing_items", [])
+                p_risks   = report.get("price_risks", [])
+                notes     = report.get("foreman_notes", [])
+                n_issues  = len(unclear) + len(missing) + len([p for p in p_risks if "❌" in p.get("verdict","")])
+
+                # Вердикт
                 if "✅" in verdict:
-                    st.success(f"**{verdict}**  \n{summary}")
+                    st.success(f"**{verdict}**")
                 elif "❌" in verdict:
-                    st.error(f"**{verdict}**  \n{summary}")
+                    st.error(f"**{verdict}**")
                 else:
-                    st.warning(f"**{verdict}**  \n{summary}")
+                    st.warning(f"**{verdict}**")
 
-                # Неясные позиции
-                unclear = report.get("unclear_positions", [])
-                if unclear:
-                    with st.expander(f"❓ Неясные позиции ({len(unclear)}) — уточни у заказчика",
-                                     expanded=True):
-                        for u in unclear:
-                            st.markdown(f"**{u.get('name', '')}**")
-                            st.markdown(f"🔸 *Проблема:* {u.get('issue', '')}")
-                            st.markdown(f"📋 *Уточнить:* {u.get('clarification_needed', '')}")
-                            if u.get("risk"):
-                                st.caption(f"⚠️ Риск: {u['risk']}")
-                            st.markdown("---")
+                if summary and not summary.strip().startswith("{"):
+                    st.markdown(f"*{summary}*")
 
-                # Недостающие позиции
-                missing = report.get("missing_items", [])
-                if missing:
-                    with st.expander(f"🔴 Не хватает позиций ({len(missing)})",
-                                     expanded=True):
-                        for m in missing:
-                            st.markdown(f"**{m.get('missing', '')}**")
-                            st.markdown(f"📌 *Причина:* {m.get('reason', '')}")
-                            st.caption(
-                                f"Вызвано: {m.get('triggered_by', '')}  "
-                                f"{'· Норма: ' + m['approx_norm'] if m.get('approx_norm') else ''}"
+                # Кнопка автоисправления (если есть замечания)
+                if n_issues > 0 or missing:
+                    _api_fix = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY",""))
+                    if st.button(f"🔧 Исправить автоматически ({n_issues + len(missing)} замечани{'й' if (n_issues+len(missing))>4 else 'я'})",
+                                 type="primary", use_container_width=True, key="auto_fix_btn"):
+                        _tz_ctx = st.session_state.get("last_tz_text", "ТЗ не загружено")
+                        with st.spinner("Применяю замечания Василича…"):
+                            from foreman import auto_fix_by_foreman
+                            _fix_result = auto_fix_by_foreman(
+                                cart=st.session_state["kp_cart"],
+                                foreman_report=report,
+                                tz_text=_tz_ctx,
+                                api_key=_api_fix,
                             )
-                            st.markdown("---")
+                        st.session_state["auto_fix_result"] = _fix_result
+                        st.success(f"✅ {_fix_result.get('summary','Готово!')}")
+                        st.rerun()
+
+                    # Показать результат автоисправления
+                    if st.session_state.get("auto_fix_result"):
+                        _fix = st.session_state["auto_fix_result"]
+                        with st.expander(f"🔧 Что исправил Василич:", expanded=True):
+                            for ci in _fix.get("corrected_items", []):
+                                _a = ci.get("action","")
+                                _icon = {"keep":"✅","update_qty":"📐","update_name":"✏️",
+                                         "remove":"🗑","add":"➕"}.get(_a,"•")
+                                st.markdown(f"{_icon} **{ci.get('original_name') or ci.get('new_name','')}**")
+                                if ci.get("note"):
+                                    st.caption(ci["note"])
+
+                st.markdown("---")
+
+                # Неясные позиции (компактно)
+                if unclear:
+                    st.markdown(f"**❓ Нужно уточнить ({len(unclear)} поз.):**")
+                    for u in unclear:
+                        with st.container():
+                            st.markdown(f"🔸 **{u.get('name','')}** — {u.get('issue','')}")
+                            st.caption(f"Уточни: {u.get('clarification_needed','')}  ·  Риск: {u.get('risk','')}")
+
+                # Недостающие
+                if missing:
+                    st.markdown(f"**🔴 Не хватает ({len(missing)} поз.):**")
+                    for m in missing:
+                        st.markdown(f"➕ **{m.get('missing','')}** — {m.get('reason','')}")
+                        st.caption(f"Требует: {m.get('triggered_by','')} · Норма: {m.get('approx_norm','')}")
 
                 # Ценовые риски
-                price_risks = report.get("price_risks", [])
-                if price_risks:
-                    with st.expander(f"💰 Ценовые риски ({len(price_risks)})",
-                                     expanded=False):
-                        for pr in price_risks:
-                            vrdt = pr.get("verdict", "")
-                            icon = "✅" if "✅" in vrdt else ("❌" if "❌" in vrdt else "⚠️")
-                            st.markdown(
-                                f"{icon} **{pr.get('name','')}** — "
-                                f"{pr.get('our_price',0):,} ₽/{pr.get('unit','')} × "
-                                f"{pr.get('qty',0)} = **{pr.get('total',0):,} ₽**"
-                            )
-                            st.caption(pr.get("market_comment", ""))
+                bad_risks = [p for p in p_risks if "❌" in p.get("verdict","") or "⚠️" in p.get("verdict","")]
+                if bad_risks:
+                    st.markdown(f"**💰 Ценовые риски ({len(bad_risks)}):**")
+                    for pr in bad_risks:
+                        icon = "❌" if "❌" in pr.get("verdict","") else "⚠️"
+                        st.markdown(f"{icon} **{pr.get('name','')}** — {pr.get('market_comment','')}")
 
-                # Общие замечания прораба
-                notes = report.get("foreman_notes", [])
+                # Замечания прораба
                 if notes:
-                    with st.expander("📝 Замечания прораба", expanded=False):
-                        for note in notes:
-                            st.markdown(f"• {note}")
+                    st.markdown("**📝 Замечания Василича:**")
+                    for note in notes:
+                        st.info(f"🔧 {note}")
 
                 if st.button("✖ Закрыть отчёт", key="close_report"):
                     st.session_state["foreman_report"] = None
+                    st.session_state["auto_fix_result"] = None
                     st.rerun()
 
             st.markdown("---")
@@ -1230,6 +1268,7 @@ with tab_tz:
                     try:
                         from ai_parser import extract_text, call_claude_api, match_items
                         raw_text = extract_text(uploaded.read(), uploaded.name)
+                        st.session_state["last_tz_text"] = raw_text[:5000]  # для auto_fix
                         if not raw_text.strip():
                             st.error("Не удалось извлечь текст из файла.")
                         else:

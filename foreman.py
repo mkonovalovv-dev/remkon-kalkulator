@@ -100,7 +100,7 @@ def review_kp(cart: dict, obj_name: str, area: float, api_key: str) -> dict:
 
     msg = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=8000,
         system=FOREMAN_SYSTEM,
         messages=[{
             "role": "user",
@@ -188,3 +188,95 @@ def quick_review_positions(positions: list, api_key: str) -> dict:
         return {str(k): v for k, v in result.items()}
     except Exception:
         return {}
+
+
+# ─── АВТОМАТИЧЕСКОЕ ИСПРАВЛЕНИЕ ПО ПРОРАБУ ───────────────────────────────────
+
+AUTO_FIX_SYSTEM = """Ты — Сергей Николаевич (технический эксперт, 3 диплома, 30 лет прорабом)
+совместно с Василичем (финальный прораб, 38 лет стажа).
+
+Вам дали:
+1. Исходное ТЗ заказчика
+2. Текущий состав КП (работы и материалы)
+3. Замечания Василича по текущему КП
+
+Ваша задача: применить замечания Василича и выдать ИСПРАВЛЕННЫЙ состав КП.
+
+Правила:
+- Позиции с нулевым объёмом — оцени из контекста ТЗ и проставь реалистичный объём, или удали если позиция лишняя
+- Добавь пропущенные работы которые Василич указал
+- Уточни формулировки которые он посчитал размытыми
+- Не трогай позиции которые Василич одобрил
+
+Верни ТОЛЬКО JSON:
+{
+  "corrected_items": [
+    {
+      "action": "keep" | "update_qty" | "update_name" | "remove" | "add",
+      "original_name": "Исходное название (или null для add)",
+      "new_name": "Новое название (или null если не меняется)",
+      "qty": 25.5,
+      "unit": "м²",
+      "note": "Что изменено и почему"
+    }
+  ],
+  "summary": "Краткое описание что исправлено"
+}"""
+
+
+def auto_fix_by_foreman(
+    cart: dict,
+    foreman_report: dict,
+    tz_text: str,
+    api_key: str,
+) -> dict:
+    """
+    Автоматически применяет замечания Василича к составу КП.
+    Возвращает {corrected_items: [...], summary: str}
+    """
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+
+    # Формируем текущий состав КП
+    kp_lines = ["ТЕКУЩИЙ СОСТАВ КП:"]
+    for iid, entry in cart.items():
+        item = entry["item"]
+        qty  = entry["qty"]
+        price = sum(w["price"] * w["norm"] for w in item.get("works", []))
+        kp_lines.append(f"  • {item['name']} | {qty} {item['unit']} | {price:,.0f} ₽/{item['unit']}")
+
+    # Замечания Василича
+    vasil_lines = ["ЗАМЕЧАНИЯ ВАСИЛИЧА:"]
+    for u in foreman_report.get("unclear_positions", []):
+        vasil_lines.append(f"  ⚠️ {u.get('name','')} — {u.get('issue','')} | Уточнить: {u.get('clarification_needed','')}")
+    for m in foreman_report.get("missing_items", []):
+        vasil_lines.append(f"  ➕ Не хватает: {m.get('missing','')} (т.к. есть {m.get('triggered_by','')})")
+    for pr in foreman_report.get("price_risks", []):
+        if "❌" in pr.get("verdict","") or "⚠️" in pr.get("verdict",""):
+            vasil_lines.append(f"  💰 Цена под риском: {pr.get('name','')} — {pr.get('market_comment','')}")
+
+    prompt = (
+        f"ИСХОДНОЕ ТЗ (фрагмент):\n{tz_text[:3000]}\n\n"
+        f"{chr(10).join(kp_lines)}\n\n"
+        f"{chr(10).join(vasil_lines)}"
+    )
+
+    msg = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        system=AUTO_FIX_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = msg.content[0].text.strip()
+    raw = re.sub(r"^```json\s*", "", raw)
+    raw = re.sub(r"^```\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    json_m = re.search(r"\{[\s\S]*\}", raw)
+    if json_m:
+        raw = json_m.group()
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"corrected_items": [], "summary": "Не удалось разобрать ответ"}
