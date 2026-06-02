@@ -223,6 +223,8 @@ if "kp_cart"        not in st.session_state:
     st.session_state["kp_cart"]        = {}   # {item_id: {"item": ..., "qty": float}}
 if "active_mat_iid" not in st.session_state:
     st.session_state["active_mat_iid"] = None  # открытый редактор материалов
+if "works_expanded" not in st.session_state:
+    st.session_state["works_expanded"] = True   # блок работ развёрнут
 if "suggest_for"    not in st.session_state:
     st.session_state["suggest_for"]    = None  # item_id для которого показываем попап
 if "suggest_qty"    not in st.session_state:
@@ -615,362 +617,296 @@ with tab_kp:
 
         # Заголовок корзины
         if n_cart > 0:
-            st.subheader(f"🛒 КП ({n_cart} поз.)")
-            m1, m2 = st.columns(2)
-            m1.metric("Работы", f"{int(total_work):,} ₽".replace(",", " "))
-            m2.metric("Материалы", f"{int(total_mat):,} ₽".replace(",", " "))
+            _wexp = st.session_state.get("works_expanded", True)
+            _h1, _h2, _h3 = st.columns([3, 2, 2])
+            with _h1:
+                st.subheader(f"🛒 КП ({n_cart} поз.)")
+            with _h2:
+                st.metric("Работы", f"{int(total_work):,} ₽".replace(",", " "))
+            with _h3:
+                st.metric("Материалы", f"{int(total_mat):,} ₽".replace(",", " "))
 
-            st.markdown("---")
+            _toggle_label = "▲ Свернуть позиции" if _wexp else "▼ Развернуть позиции"
+            if st.button(_toggle_label, key="works_toggle", use_container_width=True):
+                st.session_state["works_expanded"] = not _wexp
+                st.rerun()
 
-            # Список позиций в корзине
+            # ── Позиции КП — каждая в своём expander ────────────────────────
             rows_for_excel = []
+            api_key_mat = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY",""))
+            gem_key_mat  = st.secrets.get("GEMINI_API_KEY",   os.environ.get("GEMINI_API_KEY",""))
+
             for iid, entry in list(cart.items()):
                 it  = entry["item"]
                 qty = entry["qty"]
                 ws  = sum(qty * w.get("norm",1)*w.get("price",0) for w in it.get("works",[]))
                 ms  = sum(qty * m.get("norm",0)*m.get("price",0) for m in it.get("materials",[]))
-                rows_for_excel.append({"Раздел": it["section"], "Позиция": it["name"],
-                                       "Ед.": it["unit"], "Кол-во": qty,
-                                       "Работы, ₽": int(ws), "Материалы, ₽": int(ms),
-                                       "Итого, ₽": int(ws+ms)})
 
-                # ── Карточка позиции ──────────────────────────────────────
-                bc1, bc2, bc3, bc4 = st.columns([4, 1.5, 1.5, 0.7])
-                with bc1:
-                    st.markdown(f"**{it['name']}**")
-                    st.caption(f"{it['section']}")
-                with bc2:
-                    new_qty = st.number_input(
-                        it["unit"], min_value=0.0, value=float(qty),
-                        step=1.0, format="%.1f",
-                        key=f"cart_qty_{iid}",
-                        label_visibility="visible",
-                    )
-                    if abs(new_qty - qty) > 0.001:
-                        st.session_state["kp_cart"][iid]["qty"] = new_qty
-                        st.rerun()
-                with bc3:
-                    st.markdown(f"**{int(ws+ms):,} ₽**".replace(",", " "))
-                with bc4:
-                    if st.button("✖", key=f"rm_c_{iid}", help="Убрать из КП"):
-                        cart_remove(iid)
-                        st.rerun()
-
-                # ── Комментарий Василича + мини-чат прямо под позицией ────────
-                _f_report = st.session_state.get("foreman_report") or {}
-                _f_item_note = None
-                for _u in _f_report.get("unclear_positions", []):
-                    if it["name"].lower() in _u.get("name","").lower():
-                        _f_item_note = f"⚠️ {_u.get('issue','')} — {_u.get('clarification_needed','')}"
-                        break
-                if not _f_item_note:
-                    for _mi in _f_report.get("missing_items", []):
-                        if it["name"].lower() in _mi.get("triggered_by","").lower():
-                            _f_item_note = f"➕ Не хватает: {_mi.get('missing','')}"
-                            break
-                if _f_item_note:
-                    st.markdown(
-                        f'<div style="font-size:12px;color:#E07B00;padding:3px 8px;'
-                        f'background:#FFF3DC;border-radius:6px;margin:2px 0">'
-                        f'🔧 {_f_item_note}</div>',
-                        unsafe_allow_html=True
-                    )
-
-                # Мини-чат с Василичем по этой позиции
-                _vasil_key = f"vasil_q_{iid}"
-                _vasil_chat_key = f"vasil_chat_{iid}"
-                if _vasil_chat_key not in st.session_state:
-                    st.session_state[_vasil_chat_key] = []
-                _vcol1, _vcol2 = st.columns([4, 1.5])
-                with _vcol1:
-                    _vasil_q = st.text_input(
-                        "Спросить Василича",
-                        placeholder="Сколько тут нужно материала? Не дорого ли?",
-                        key=_vasil_key,
-                        label_visibility="collapsed",
-                    )
-                with _vcol2:
-                    if st.button("💬 Василич", key=f"vasil_ask_{iid}", use_container_width=True):
-                        _vapi = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY",""))
-                        if _vasil_q.strip() and _vapi:
-                            import anthropic as _anth
-                            _vc = _anth.Anthropic(api_key=_vapi)
-                            _vasil_prompt = (
-                                f"ПОЗИЦИЯ КП: {it['name']} | {qty} {it['unit']} | "
-                                f"{int(ws):,} ₽ работы | {int(ms):,} ₽ материалы\n"
-                                f"ВОПРОС: {_vasil_q.strip()}"
-                            )
-                            from foreman import FOREMAN_SYSTEM
-                            _vm = _vc.messages.create(
-                                model="claude-haiku-4-5-20251001",
-                                max_tokens=400,
-                                system=FOREMAN_SYSTEM + "\nОтвечай коротко — 2-4 предложения. Без JSON.",
-                                messages=[{"role":"user","content":_vasil_prompt}],
-                            )
-                            _vasil_ans = _vm.content[0].text.strip()
-                            st.session_state[_vasil_chat_key].append(
-                                {"q": _vasil_q.strip(), "a": _vasil_ans}
-                            )
-                            st.rerun()
-
-                for _vc_msg in st.session_state.get(_vasil_chat_key, []):
-                    st.caption(f"❓ {_vc_msg['q']}")
-                    st.info(f"🔧 {_vc_msg['a']}")
-
-                # ── Блок материалов ПРЯМО ПОД ПОЗИЦИЕЙ ──────────────────────
                 mat_key  = f"mat_{iid}"
                 chat_key = f"mat_chat_{iid}"
                 if mat_key not in st.session_state:
-                    # Авто-загрузка материалов из справочника при первом открытии
                     default_mats = []
                     for m in it.get("materials", []):
-                        norm  = m.get("norm", 0)
-                        cp    = m.get("price", 0)      # цена в справочнике = клиентская
-                        pp    = int(cp / 1.2)           # расчётная закупочная ~80%
-                        total_q = round(norm * float(qty), 2)
+                        cp = m.get("price", 0)
+                        pp = int(cp / 1.2)
+                        total_q = round(m.get("norm", 0) * float(qty), 2)
                         default_mats.append({
-                            "key":          "",
-                            "name":         m.get("name", ""),
-                            "brand":        m.get("name", ""),
-                            "unit":         m.get("unit", ""),
-                            "norm_per_unit": norm,
-                            "qty_total":    total_q,
-                            "variant":      "стандарт",
-                            "purchase_price": pp,
-                            "client_price": cp,
+                            "key": "", "name": m.get("name",""), "brand": m.get("name",""),
+                            "unit": m.get("unit",""), "norm_per_unit": m.get("norm",0),
+                            "qty_total": total_q, "variant": "стандарт",
+                            "purchase_price": pp, "client_price": cp,
                         })
                     st.session_state[mat_key] = default_mats
                 if chat_key not in st.session_state:
-                    st.session_state[chat_key] = []  # история диалога
+                    st.session_state[chat_key] = []
 
-                # Кнопка открытия редактора материалов (на всю ширину ниже)
-                _mats_preview = st.session_state.get(mat_key, [])
-                _mat_preview_total = int(sum(
-                    m.get("client_price", 0) * m.get("qty_total", 0)
-                    for m in _mats_preview
-                ))
-                _mat_count = len(_mats_preview)
-                _is_active = st.session_state.get("active_mat_iid") == iid
-                _btn_label = (
-                    f"{'🟢' if _mat_count else '📦'} {'Материалы · ' + str(_mat_count) + ' поз. · ' + str(_mat_preview_total) + ' ₽' if _mat_count else 'Добавить материалы'} {'▲' if _is_active else '▼'}"
+                # Материалы от агента — подсчёт для заголовка
+                agent_mats = st.session_state.get(mat_key, [])
+                mat_client_total = int(sum(m.get("client_price",0)*m.get("qty_total",0) for m in agent_mats))
+                mat_count = len(agent_mats)
+
+                rows_for_excel.append({
+                    "Раздел": it["section"], "Позиция": it["name"],
+                    "Ед.": it["unit"], "Кол-во": qty,
+                    "Работы, ₽": int(ws), "Материалы, ₽": int(ms+mat_client_total),
+                    "Итого, ₽": int(ws+ms+mat_client_total),
+                })
+
+                # Expander-карточка позиции
+                exp_title = (
+                    f"**{it['name'][:45]}{'…' if len(it['name'])>45 else ''}** "
+                    f"· {qty} {it['unit']} "
+                    f"· {int(ws):,} ₽ раб."
+                    + (f" + {mat_client_total:,} ₽ мат." if mat_client_total > 0 else "")
                 ).replace(",", " ")
-                if st.button(_btn_label, key=f"mat_open_{iid}", use_container_width=True,
-                             type="primary" if _is_active else "secondary"):
-                    st.session_state["active_mat_iid"] = None if _is_active else iid
-                    st.rerun()
-                if False:  # placeholder — реальный код ниже вне колонки
 
-                    mat_api = st.secrets.get("ANTHROPIC_API_KEY",
-                               os.environ.get("ANTHROPIC_API_KEY", ""))
-                    mat_markup = st.number_input(
-                        "Наценка на материалы, %", min_value=0, max_value=100,
-                        step=5, value=20, key=f"mat_markup_{iid}",
-                        help="Скрытая наценка: клиент видит рыночную цену, разница — ваша маржа",
+                with st.expander(exp_title, expanded=False):
+
+                    # Количество + удалить
+                    ec1, ec2, ec3 = st.columns([3, 2, 1])
+                    with ec1:
+                        new_qty = st.number_input(
+                            it["unit"], min_value=0.0, value=float(qty),
+                            step=1.0, format="%.1f", key=f"cart_qty_{iid}",
+                        )
+                        if abs(new_qty - qty) > 0.001:
+                            st.session_state["kp_cart"][iid]["qty"] = new_qty
+                            # Пересчитываем материалы
+                            for mi2, m2 in enumerate(st.session_state.get(mat_key, [])):
+                                norm2 = m2.get("norm_per_unit", 0)
+                                if norm2 > 0:
+                                    st.session_state[mat_key][mi2]["qty_total"] = round(norm2 * new_qty, 2)
+                            st.rerun()
+                    with ec2:
+                        st.metric("Итого", f"{int(ws+ms+mat_client_total):,} ₽".replace(",", " "))
+                    with ec3:
+                        if st.button("🗑 Убрать", key=f"rm_c_{iid}", use_container_width=True):
+                            cart_remove(iid)
+                            st.rerun()
+
+                    # Комментарий Василича (после финального прораба)
+                    _f_rep = st.session_state.get("foreman_report") or {}
+                    _fn = None
+                    for _u in _f_rep.get("unclear_positions", []):
+                        if it["name"].lower()[:20] in _u.get("name","").lower():
+                            _fn = f"⚠️ {_u.get('issue','')} — {_u.get('clarification_needed','')}"
+                            break
+                    if not _fn:
+                        for _mi in _f_rep.get("missing_items", []):
+                            if it["name"].lower()[:20] in _mi.get("triggered_by","").lower():
+                                _fn = f"➕ {_mi.get('missing','')}"
+                                break
+                    if _fn:
+                        st.markdown(
+                            f'<div style="font-size:12px;color:#E07B00;padding:4px 10px;'
+                            f'background:#FFF3DC;border-radius:6px;margin:4px 0">'
+                            f'🔧 Василич: {_fn}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    # Мини-чат с Василичем по этой позиции
+                    _vc_key  = f"vasil_chat_{iid}"
+                    if _vc_key not in st.session_state: st.session_state[_vc_key] = []
+                    _vq1, _vq2 = st.columns([4, 1.5])
+                    with _vq1:
+                        _vq = st.text_input("Спросить Василича", placeholder="Не дорого ли? Чего не хватает?",
+                                            key=f"vasil_q_{iid}", label_visibility="collapsed")
+                    with _vq2:
+                        if st.button("💬 Спросить", key=f"vasil_btn_{iid}", use_container_width=True):
+                            if _vq.strip() and api_key_mat:
+                                import anthropic as _anth2
+                                _vc2 = _anth2.Anthropic(api_key=api_key_mat)
+                                from foreman import FOREMAN_SYSTEM
+                                _vp = f"ПОЗИЦИЯ: {it['name']} | {qty} {it['unit']} | {int(ws):,} ₽ работа\nВОПРОС: {_vq.strip()}"
+                                _vm2 = _vc2.messages.create(
+                                    model="claude-haiku-4-5-20251001", max_tokens=350,
+                                    system=FOREMAN_SYSTEM + "\nОтвечай коротко — 2-3 предложения. Без JSON.",
+                                    messages=[{"role":"user","content":_vp}],
+                                )
+                                st.session_state[_vc_key].append({"q": _vq.strip(), "a": _vm2.content[0].text.strip()})
+                                st.rerun()
+                    for _vc_msg in st.session_state.get(_vc_key, []):
+                        st.caption(f"❓ {_vc_msg['q']}")
+                        st.info(f"🔧 {_vc_msg['a']}")
+
+                    st.markdown("---")
+
+                    # ── МАТЕРИАЛЫ — прямо внутри карточки работы ──────────────
+                    st.markdown("**📦 Материалы к этой работе:**")
+
+                    mat_markup_item = st.number_input(
+                        "Наценка %", min_value=0, max_value=100, step=5, value=20,
+                        key=f"markup_{iid}", label_visibility="visible",
                     )
-                    # Кнопка пересчёта объёмов при изменении кол-ва работ
-                    if st.button("🔄 Пересчитать объёмы под текущее кол-во",
-                                 key=f"mat_recalc_{iid}", use_container_width=True):
-                        updated_mats = []
-                        for m in st.session_state[mat_key]:
-                            norm = m.get("norm_per_unit", 0)
-                            if norm > 0:
-                                m["qty_total"] = round(norm * float(qty), 2)
-                            updated_mats.append(m)
-                        st.session_state[mat_key] = updated_mats
-                        st.rerun()
 
-                    # Показываем историю диалога
-                    for msg in st.session_state[chat_key]:
-                        role = msg["role"]
-                        if role == "user":
-                            st.markdown(f"👤 *{msg['text']}*")
-                        else:
-                            st.markdown(f"🔧 {msg['text']}")
-
-                    # Показываем текущий список материалов
-                    cur_mats = st.session_state[mat_key]
-                    if cur_mats:
-                        st.markdown("**Выбранные материалы:**")
-                        mat_total_client = 0
-                        for mi, m in enumerate(cur_mats):
+                    if agent_mats:
+                        # Таблица материалов
+                        for mi, m in enumerate(agent_mats):
                             qty_m  = m.get("qty_total", 0)
                             cp     = m.get("client_price", 0)
-                            pp     = m.get("purchase_price", 0)
-                            # Применяем наценку если цена не из каталога
+                            pp     = m.get("purchase_price", int(cp * 0.78) if cp > 0 else 0)
                             if cp == 0 and pp > 0:
-                                cp = int(pp * (1 + mat_markup / 100))
+                                cp = int(pp * (1 + mat_markup_item / 100))
                                 st.session_state[mat_key][mi]["client_price"] = cp
                             total_m = int(cp * qty_m)
-                            mat_total_client += total_m
+                            margin_m = int((cp - pp) * qty_m)
 
-                            # Строка материала — 2-уровневая компоновка
-                            mr1, mr2, mr_del = st.columns([7, 2, 0.6])
-                            with mr1:
-                                brand_show = m.get('brand') or m.get('name', '—')
-                                name_show  = m.get('name', '')
-                                if brand_show == name_show:
-                                    st.markdown(f"**{brand_show}**")
-                                else:
-                                    st.markdown(f"**{brand_show}**")
-                                    st.caption(name_show)
-                            with mr_del:
-                                if st.button("✖", key=f"mat_rm_{iid}_{mi}"):
-                                    st.session_state[mat_key].pop(mi)
-                                    st.rerun()
-
-                            # Вторая строка: количество | вариант | цена за ед | итого
-                            mc2, mc3, mc4, mc5 = st.columns([2, 2.5, 2, 2])
+                            mc1, mc2, mc3, mc4, mc5 = st.columns([3.5, 1.8, 2, 2, 0.6])
+                            with mc1:
+                                st.markdown(f"**{m.get('brand') or m.get('name','—')}**")
+                                if m.get("brand") and m.get("name") and m["brand"] != m["name"]:
+                                    st.caption(m["name"])
                             with mc2:
                                 new_qty_m = st.number_input(
-                                    m.get("unit", "ед."),
-                                    min_value=0.0, value=float(qty_m),
-                                    step=0.5, format="%.2f",
-                                    key=f"mat_qty_{iid}_{mi}",
+                                    m.get("unit","ед."), min_value=0.0, value=float(qty_m),
+                                    step=0.5, format="%.2f", key=f"mq_{iid}_{mi}",
                                 )
                                 if abs(new_qty_m - qty_m) > 0.001:
                                     st.session_state[mat_key][mi]["qty_total"] = new_qty_m
                                     st.rerun()
                             with mc3:
-                                v_labels = {"эконом": "💰 Эконом", "стандарт": "✅ Стандарт", "премиум": "⭐ Премиум"}
-                                v_opts   = list(v_labels.keys())
-                                cur_v    = m.get("variant", "стандарт")
-                                v_idx    = v_opts.index(cur_v) if cur_v in v_opts else 1
-                                new_v    = st.selectbox("Класс", [v_labels[v] for v in v_opts],
-                                                        index=v_idx,
-                                                        key=f"mat_var_{iid}_{mi}",
-                                                        label_visibility="collapsed")
-                                # Конвертируем обратно в ключ
-                                new_v_key = {v: k for k, v in v_labels.items()}.get(new_v, new_v)
-                                if new_v_key != cur_v:
-                                    from materials_agent import MATERIAL_CATALOG
-                                    mkey = m.get("key", "")
-                                    if mkey in MATERIAL_CATALOG and new_v_key in MATERIAL_CATALOG[mkey]["variants"]:
-                                        vdata = MATERIAL_CATALOG[mkey]["variants"][new_v_key]
+                                # Переключатель вариантов с фиксом поиска по каталогу
+                                v_opts_m  = ["эконом", "стандарт", "премиум"]
+                                v_emojis  = {"эконом": "💰", "стандарт": "✅", "премиум": "⭐"}
+                                cur_v_m   = m.get("variant", "стандарт")
+                                v_idx_m   = v_opts_m.index(cur_v_m) if cur_v_m in v_opts_m else 1
+                                v_labels_m = [f"{v_emojis[v]} {v.capitalize()}" for v in v_opts_m]
+                                new_v_label = st.selectbox(
+                                    "Класс", v_labels_m, index=v_idx_m,
+                                    key=f"mv_{iid}_{mi}", label_visibility="collapsed",
+                                )
+                                new_v_key_m = v_opts_m[v_labels_m.index(new_v_label)]
+                                if new_v_key_m != cur_v_m:
+                                    from materials_agent import MATERIAL_CATALOG as MC
+                                    # Ищем по key, потом по name
+                                    cat_key = m.get("key","")
+                                    if not cat_key:
+                                        mname_lower = m.get("name","").lower()
+                                        for ck, cv in MC.items():
+                                            if cv["name"].lower() in mname_lower or mname_lower in cv["name"].lower():
+                                                cat_key = ck
+                                                break
+                                    if cat_key and cat_key in MC and new_v_key_m in MC[cat_key]["variants"]:
+                                        vd_m = MC[cat_key]["variants"][new_v_key_m]
                                         st.session_state[mat_key][mi].update({
-                                            "variant": new_v_key,
-                                            "brand": vdata["brand"],
-                                            "purchase_price": vdata["purchase"],
-                                            "client_price": vdata["client"],
+                                            "variant": new_v_key_m,
+                                            "brand": vd_m["brand"],
+                                            "purchase_price": vd_m["purchase"],
+                                            "client_price": vd_m["client"],
+                                            "key": cat_key,
                                         })
                                     else:
-                                        st.session_state[mat_key][mi]["variant"] = new_v_key
+                                        st.session_state[mat_key][mi]["variant"] = new_v_key_m
                                     st.rerun()
                             with mc4:
                                 if cp == 0:
-                                    # Цена не задана — кнопка поиска Gemini + ручной ввод
-                                    gemini_key_m = st.secrets.get("GEMINI_API_KEY",
-                                                   os.environ.get("GEMINI_API_KEY", ""))
-                                    if gemini_key_m:
-                                        if st.button("🔍 Найти цену", key=f"gem_mat_{iid}_{mi}",
-                                                     use_container_width=True):
-                                            from ai_parser import get_market_price
-                                            mat_name_search = m.get("brand") or m.get("name", "")
-                                            with st.spinner("Gemini ищет цену…"):
-                                                pd_m = get_market_price(mat_name_search,
-                                                                        m.get("unit", "шт."),
-                                                                        gemini_key_m)
-                                            if pd_m["price_mid"] > 0:
-                                                market_cp = pd_m["price_mid"]
-                                                market_pp = int(market_cp * 0.78)  # ~22% ниже рынка
-                                                st.session_state[mat_key][mi]["client_price"]   = market_cp
-                                                st.session_state[mat_key][mi]["purchase_price"] = market_pp
-                                                st.session_state[mat_key][mi]["gemini_source"]  = pd_m.get("source","Gemini")
-                                                st.rerun()
-                                    new_cp = st.number_input(
-                                        "или вбить вручную ₽",
-                                        min_value=0, step=50,
-                                        key=f"mat_cp_{iid}_{mi}",
-                                        label_visibility="visible",
-                                    )
-                                    if new_cp > 0:
-                                        st.session_state[mat_key][mi]["client_price"]   = new_cp
-                                        st.session_state[mat_key][mi]["purchase_price"] = int(new_cp * 0.78)
+                                    if gem_key_mat and st.button("🔍 Цена", key=f"gem2_{iid}_{mi}"):
+                                        from ai_parser import get_market_price
+                                        with st.spinner("…"):
+                                            pd_m2 = get_market_price(m.get("brand") or m.get("name",""), m.get("unit","шт."), gem_key_mat)
+                                        if pd_m2["price_mid"] > 0:
+                                            st.session_state[mat_key][mi]["client_price"]   = pd_m2["price_mid"]
+                                            st.session_state[mat_key][mi]["purchase_price"] = int(pd_m2["price_mid"]*0.78)
+                                            st.rerun()
+                                    new_cp_m = st.number_input("₽/ед.", min_value=0, step=50, key=f"mcp_{iid}_{mi}", label_visibility="collapsed")
+                                    if new_cp_m > 0:
+                                        st.session_state[mat_key][mi]["client_price"]   = new_cp_m
+                                        st.session_state[mat_key][mi]["purchase_price"] = int(new_cp_m*0.78)
                                         st.rerun()
                                 else:
-                                    # Показываем клиентскую цену + закупочную + маржу
-                                    pp = m.get("purchase_price", int(cp * 0.78))
-                                    margin_m = int(cp - pp)
-                                    margin_pct_m = int((cp - pp) / pp * 100) if pp > 0 else 0
                                     st.markdown(f"**{int(cp):,} ₽**".replace(",", " "))
-                                    st.caption(f"клиент")
-                                    # Поле для нашей закупочной (скрытое поле)
-                                    new_pp = st.number_input(
-                                        f"Наша закупка ₽",
-                                        min_value=0, value=int(pp), step=50,
-                                        key=f"mat_pp_{iid}_{mi}",
-                                        help=f"Маржа: {margin_m:,} ₽ ({margin_pct_m}%)".replace(",", " "),
-                                    )
-                                    if new_pp != pp and new_pp > 0:
-                                        st.session_state[mat_key][mi]["purchase_price"] = new_pp
+                                    new_pp_m = st.number_input("наша закупка", min_value=0, value=int(pp), step=50,
+                                                               key=f"mpp_{iid}_{mi}",
+                                                               help=f"Маржа: {int(cp-pp)} ₽/ед.",
+                                                               label_visibility="visible")
+                                    if new_pp_m != pp and new_pp_m > 0:
+                                        try:
+                                            from memory import save_correction
+                                            save_correction(m.get("brand") or m.get("name",""), m.get("unit",""), "material",
+                                                            purchase_price=new_pp_m, client_price=cp)
+                                        except Exception: pass
+                                        st.session_state[mat_key][mi]["purchase_price"] = new_pp_m
                                         st.rerun()
-                                    if m.get("gemini_source"):
-                                        st.caption(f"📡 {m['gemini_source']}")
+                                    if total_m > 0:
+                                        st.caption(f"итого {int(total_m):,} ₽ | маржа +{int(margin_m):,} ₽".replace(",", " "))
                             with mc5:
-                                if total_m > 0:
-                                    pp_total = int(m.get("purchase_price", cp * 0.78) * m.get("qty_total", 0))
-                                    margin_total = total_m - pp_total
-                                    st.metric("Итого", f"{int(total_m):,} ₽".replace(",", " "))
-                                    if margin_total > 0:
-                                        st.caption(f"маржа: +{int(margin_total):,} ₽".replace(",", " "))
-                                else:
-                                    st.caption("⚠️ Укажите цену")
+                                if st.button("✖", key=f"mrm_{iid}_{mi}"):
+                                    st.session_state[mat_key].pop(mi)
+                                    st.rerun()
 
-                        st.markdown(f"**Итого материалы: {mat_total_client:,} ₽**".replace(",", " "))
+                        mat_total_client2 = int(sum(m.get("client_price",0)*m.get("qty_total",0) for m in agent_mats))
+                        st.markdown(f"**Итого материалы: {mat_total_client2:,} ₽**".replace(",", " "))
                         st.markdown("---")
 
-                    # Поле для ввода пользователя
-                    user_mat_input = st.text_input(
-                        "Напишите что нужно добавить или изменить",
-                        placeholder="ГКЛ Кнауф в 2 слоя, каркас, утеплитель…",
-                        key=f"mat_input_{iid}",
-                    )
-                    col_mat1, col_mat2 = st.columns([3, 1])
-                    with col_mat1:
-                        if st.button("🔧 Подобрать материалы", key=f"mat_ask_{iid}",
-                                     type="primary", use_container_width=True):
-                            if user_mat_input.strip() and mat_api:
+                    # Диалог с Палычем
+                    for _cm in st.session_state.get(chat_key, []):
+                        if _cm["role"] == "user": st.caption(f"👤 {_cm['text']}")
+                        else: st.info(f"🔧 {_cm['text']}")
+
+                    _pi1, _pi2, _pi3 = st.columns([4.5, 1.5, 1.2])
+                    with _pi1:
+                        _uin = st.text_input("Написать Палычу", placeholder="Добавь профиль и саморезы…",
+                                             key=f"mat_inp_{iid}", label_visibility="collapsed")
+                    with _pi2:
+                        if st.button("🔧 Палыч", key=f"mat_ask_{iid}", type="primary", use_container_width=True):
+                            if _uin.strip() and api_key_mat:
                                 from materials_agent import suggest_materials
-                                with st.spinner("Прораб подбирает материалы…"):
-                                    result = suggest_materials(
-                                        work_name=it["name"],
-                                        work_qty=float(qty),
-                                        work_unit=it["unit"],
-                                        existing_materials=st.session_state[mat_key],
-                                        user_message=user_mat_input.strip(),
-                                        api_key=mat_api,
+                                try:
+                                    from memory import get_memory_list
+                                    _mem3 = get_memory_list(30)
+                                except Exception: _mem3 = []
+                                with st.spinner("Палыч думает…"):
+                                    _res3 = suggest_materials(
+                                        work_name=it["name"], work_qty=float(qty), work_unit=it["unit"],
+                                        existing_materials=st.session_state.get(mat_key, []),
+                                        user_message=_uin.strip(), api_key=api_key_mat, memory=_mem3,
                                     )
-                                # Добавляем в историю
-                                st.session_state[chat_key].append(
-                                    {"role": "user", "text": user_mat_input.strip()}
-                                )
-                                # Добавляем новые материалы (без дублей)
-                                existing_names = {m.get("name","") for m in st.session_state[mat_key]}
-                                for new_m in result.get("materials", []):
-                                    if new_m.get("name") not in existing_names:
-                                        # Применяем наценку если нет цены
-                                        if new_m.get("client_price", 0) == 0 and new_m.get("purchase_price", 0) > 0:
-                                            new_m["client_price"] = int(
-                                                new_m["purchase_price"] * (1 + mat_markup / 100)
-                                            )
-                                        st.session_state[mat_key].append(new_m)
-                                        existing_names.add(new_m.get("name",""))
-                                # Ответ агента
-                                agent_reply = result.get("agent_comment", "")
-                                q = result.get("clarifying_question")
-                                if q:
-                                    agent_reply += f"\n\n❓ **{q}**"
-                                if agent_reply:
-                                    st.session_state[chat_key].append(
-                                        {"role": "agent", "text": agent_reply}
-                                    )
+                                st.session_state[chat_key].append({"role":"user","text":_uin.strip()})
+                                def _norm2(m): return (m.get("brand") or m.get("name","")).lower().strip()
+                                _ex_set = {_norm2(m) for m in st.session_state.get(mat_key, [])}
+                                for _nm in _res3.get("materials", []):
+                                    if _norm2(_nm) not in _ex_set:
+                                        if _nm.get("client_price",0)==0 and gem_key_mat:
+                                            from ai_parser import get_market_price
+                                            _pd5 = get_market_price(_nm.get("brand") or _nm.get("name",""), _nm.get("unit","шт."), gem_key_mat)
+                                            if _pd5["price_mid"] > 0:
+                                                _nm["client_price"]   = _pd5["price_mid"]
+                                                _nm["purchase_price"] = int(_pd5["price_mid"]*0.78)
+                                        if _nm.get("client_price",0)==0 and _nm.get("purchase_price",0)>0:
+                                            _nm["client_price"] = int(_nm["purchase_price"]*(1+mat_markup_item/100))
+                                        st.session_state[mat_key].append(_nm)
+                                        _ex_set.add(_norm2(_nm))
+                                _reply3 = _res3.get("agent_comment","")
+                                _q3 = _res3.get("clarifying_question")
+                                if _q3: _reply3 += f"\n\n❓ **{_q3}**"
+                                if _reply3: st.session_state[chat_key].append({"role":"agent","text":_reply3})
                                 st.rerun()
-                    with col_mat2:
-                        if st.button("🗑 Очистить", key=f"mat_clear_{iid}", use_container_width=True):
+                    with _pi3:
+                        if st.button("🗑 Очист.", key=f"mat_clr_{iid}", use_container_width=True):
                             st.session_state[mat_key] = []
                             st.session_state[chat_key] = []
                             st.rerun()
 
-            st.markdown("---")
 
             # Финансовые параметры
             with st.expander("💼 Доп. расходы и финансы", expanded=False):
@@ -1193,238 +1129,6 @@ with tab_kp:
             st.markdown("Или запустите **мастер расчёта** — он автоматически подберёт всю цепочку работ с объёмами.")
 
     st.markdown("---")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # ПОЛНОШИРИННЫЙ РЕДАКТОР МАТЕРИАЛОВ
-    # ══════════════════════════════════════════════════════════════════════════
-    _active_iid = st.session_state.get("active_mat_iid")
-    if _active_iid and _active_iid in st.session_state.get("kp_cart", {}):
-        _act_entry = st.session_state["kp_cart"][_active_iid]
-        _act_item  = _act_entry["item"]
-        _act_qty   = _act_entry["qty"]
-        _mat_key   = f"mat_{_active_iid}"
-        _chat_key  = f"mat_chat_{_active_iid}"
-        _mat_api   = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
-        _gem_key   = st.secrets.get("GEMINI_API_KEY",   os.environ.get("GEMINI_API_KEY", ""))
-
-        st.markdown(f"### 📦 Материалы: **{_act_item['name']}** · {_act_qty} {_act_item['unit']}")
-
-        # Наценка на материалы
-        _mat_markup = st.number_input(
-            "Наценка на материалы, %", min_value=0, max_value=100, step=5, value=20,
-            key=f"mat_markup_{_active_iid}",
-            help="Клиент видит рыночную цену. Разница — ваша маржа.",
-        )
-
-        # Кнопка пересчёта
-        if st.button("🔄 Пересчитать объёмы (по текущему кол-ву работ)",
-                     key=f"mat_recalc_{_active_iid}"):
-            for mi2, m2 in enumerate(st.session_state[_mat_key]):
-                norm2 = m2.get("norm_per_unit", 0)
-                if norm2 > 0:
-                    st.session_state[_mat_key][mi2]["qty_total"] = round(norm2 * float(_act_qty), 2)
-            st.rerun()
-
-        # Список материалов — таблица на всю ширину
-        _cur_mats = st.session_state.get(_mat_key, [])
-        _mat_total_client = 0
-
-        if _cur_mats:
-            # Заголовок таблицы
-            th1, th2, th3, th4, th5, th6 = st.columns([4, 2.5, 2, 2.5, 2.5, 0.6])
-            th1.markdown("**Материал**"); th2.markdown("**Кол-во**")
-            th3.markdown("**Класс**"); th4.markdown("**Цена клиента**")
-            th5.markdown("**Маржа**"); th6.markdown("")
-            st.markdown("---")
-
-            for mi, m in enumerate(_cur_mats):
-                qty_m  = m.get("qty_total", 0)
-                cp     = m.get("client_price", 0)
-                pp     = m.get("purchase_price", int(cp * 0.78) if cp > 0 else 0)
-                if cp == 0 and pp > 0:
-                    cp = int(pp * (1 + _mat_markup / 100))
-                    st.session_state[_mat_key][mi]["client_price"] = cp
-                total_m = int(cp * qty_m)
-                _mat_total_client += total_m
-                margin_m = int((cp - pp) * qty_m)
-
-                mc1, mc2, mc3, mc4, mc5, mc6 = st.columns([4, 2.5, 2, 2.5, 2.5, 0.6])
-                with mc1:
-                    brand_show = m.get("brand") or m.get("name", "—")
-                    st.markdown(f"**{brand_show}**")
-                    st.caption(m.get("name", ""))
-                with mc2:
-                    new_qty_m = st.number_input(
-                        m.get("unit", "ед."), min_value=0.0,
-                        value=float(qty_m), step=0.5, format="%.2f",
-                        key=f"mat_qty_{_active_iid}_{mi}",
-                    )
-                    if abs(new_qty_m - qty_m) > 0.001:
-                        st.session_state[_mat_key][mi]["qty_total"] = new_qty_m
-                        st.rerun()
-                with mc3:
-                    v_labels = {"эконом": "💰 Эконом", "стандарт": "✅ Стандарт", "премиум": "⭐ Премиум"}
-                    v_opts = list(v_labels.keys())
-                    cur_v  = m.get("variant", "стандарт")
-                    v_idx  = v_opts.index(cur_v) if cur_v in v_opts else 1
-                    new_v  = st.selectbox("", [v_labels[v] for v in v_opts], index=v_idx,
-                                          key=f"mat_var_{_active_iid}_{mi}",
-                                          label_visibility="collapsed")
-                    new_v_key = {v: k for k, v in v_labels.items()}.get(new_v, new_v)
-                    if new_v_key != cur_v:
-                        from materials_agent import MATERIAL_CATALOG
-                        mkey_c = m.get("key", "")
-                        if mkey_c in MATERIAL_CATALOG and new_v_key in MATERIAL_CATALOG[mkey_c]["variants"]:
-                            vd = MATERIAL_CATALOG[mkey_c]["variants"][new_v_key]
-                            st.session_state[_mat_key][mi].update({
-                                "variant": new_v_key, "brand": vd["brand"],
-                                "purchase_price": vd["purchase"], "client_price": vd["client"],
-                            })
-                        else:
-                            st.session_state[_mat_key][mi]["variant"] = new_v_key
-                        st.rerun()
-                with mc4:
-                    if cp == 0:
-                        # Авто-поиск через Gemini
-                        if _gem_key:
-                            if st.button("🔍 Найти цену", key=f"gem_m_{_active_iid}_{mi}",
-                                         use_container_width=True):
-                                from ai_parser import get_market_price
-                                with st.spinner("Gemini…"):
-                                    pd3 = get_market_price(
-                                        m.get("brand") or m.get("name", ""),
-                                        m.get("unit", "шт."), _gem_key
-                                    )
-                                if pd3["price_mid"] > 0:
-                                    st.session_state[_mat_key][mi]["client_price"]   = pd3["price_mid"]
-                                    st.session_state[_mat_key][mi]["purchase_price"] = int(pd3["price_mid"] * 0.78)
-                                    st.session_state[_mat_key][mi]["gemini_source"]  = pd3.get("source","")
-                                    st.rerun()
-                        new_cp2 = st.number_input("₽/ед.", min_value=0, step=50,
-                                                   key=f"mat_cp_{_active_iid}_{mi}",
-                                                   label_visibility="collapsed")
-                        if new_cp2 > 0:
-                            st.session_state[_mat_key][mi]["client_price"]   = new_cp2
-                            st.session_state[_mat_key][mi]["purchase_price"] = int(new_cp2 * 0.78)
-                            st.rerun()
-                    else:
-                        st.markdown(f"**{int(cp):,} ₽/ед.**".replace(",", " "))
-                        new_pp2 = st.number_input(
-                            "наша закупка", min_value=0, value=int(pp), step=50,
-                            key=f"mat_pp_{_active_iid}_{mi}",
-                            help=f"Клиент: {cp} ₽, наша: {pp} ₽, маржа: {int(cp-pp)} ₽/ед.",
-                            label_visibility="visible",
-                        )
-                        if new_pp2 != pp and new_pp2 > 0:
-                            # Запоминаем правку — дедупликация по имени материала
-                            try:
-                                from memory import save_correction
-                                save_correction(
-                                    name=m.get("brand") or m.get("name",""),
-                                    unit=m.get("unit",""),
-                                    correction_type="material",
-                                    purchase_price=new_pp2,
-                                    client_price=cp,
-                                )
-                            except Exception:
-                                pass
-                            st.session_state[_mat_key][mi]["purchase_price"] = new_pp2
-                            st.rerun()
-                with mc5:
-                    if total_m > 0:
-                        st.metric("Итого", f"{int(total_m):,} ₽".replace(",", " "))
-                        if margin_m > 0:
-                            st.caption(f"маржа: +{int(margin_m):,} ₽".replace(",", " "))
-                    else:
-                        st.caption("⚠️ нет цены")
-                with mc6:
-                    if st.button("✖", key=f"mat_rm_{_active_iid}_{mi}"):
-                        st.session_state[_mat_key].pop(mi)
-                        st.rerun()
-
-            st.markdown("---")
-            st.markdown(f"**📊 Итого материалы: {_mat_total_client:,} ₽**".replace(",", " "))
-
-        # История диалога с агентом
-        for msg in st.session_state.get(_chat_key, []):
-            role = msg["role"]
-            if role == "user":
-                st.markdown(f"👤 *{msg['text']}*")
-            else:
-                st.info(f"🔧 {msg['text']}")
-
-        # Поле для диалога с агентом Палычем
-        st.markdown("**Написать Палычу:**")
-        uc1, uc2, uc3 = st.columns([5, 1.5, 1.5])
-        with uc1:
-            _user_mat_input = st.text_input(
-                "Сообщение", placeholder="Добавь брус 50×100 и саморезы, профиль направляющий…",
-                key=f"mat_input_{_active_iid}", label_visibility="collapsed",
-            )
-        with uc2:
-            if st.button("🔧 Спросить Палыча", key=f"mat_ask_{_active_iid}",
-                         type="primary", use_container_width=True):
-                if _user_mat_input.strip() and _mat_api:
-                    from materials_agent import suggest_materials
-                    # Загружаем умную память (дедуплицированные правки)
-                    try:
-                        from memory import get_memory_list
-                        _mem2 = get_memory_list(limit=30)
-                    except Exception:
-                        _mem2 = []
-                    with st.spinner("Палыч думает…"):
-                        _result = suggest_materials(
-                            work_name=_act_item["name"],
-                            work_qty=float(_act_qty),
-                            work_unit=_act_item["unit"],
-                            existing_materials=st.session_state.get(_mat_key, []),
-                            user_message=_user_mat_input.strip(),
-                            api_key=_mat_api,
-                            memory=_mem2,
-                        )
-                    st.session_state[_chat_key].append({"role": "user", "text": _user_mat_input.strip()})
-                    # Дедупликация — нормализуем имена (lower+strip) + brand
-                    def _norm_mat_name(m):
-                        b = (m.get("brand") or "").lower().strip()
-                        n = (m.get("name") or "").lower().strip()
-                        return b or n
-                    _existing_names = {_norm_mat_name(m) for m in st.session_state.get(_mat_key, [])}
-                    for _new_m in _result.get("materials", []):
-                        if _norm_mat_name(_new_m) not in _existing_names:
-                            # Авто-поиск цены если не задана
-                            if _new_m.get("client_price", 0) == 0 and _gem_key:
-                                from ai_parser import get_market_price
-                                _pd4 = get_market_price(
-                                    _new_m.get("brand") or _new_m.get("name",""),
-                                    _new_m.get("unit","шт."), _gem_key
-                                )
-                                if _pd4["price_mid"] > 0:
-                                    _new_m["client_price"]   = _pd4["price_mid"]
-                                    _new_m["purchase_price"] = int(_pd4["price_mid"] * 0.78)
-                                    _new_m["gemini_source"]  = _pd4.get("source","")
-                            if _new_m.get("client_price", 0) == 0 and _new_m.get("purchase_price", 0) > 0:
-                                _new_m["client_price"] = int(_new_m["purchase_price"] * (1 + _mat_markup / 100))
-                            st.session_state[_mat_key].append(_new_m)
-                            _existing_names.add(_norm_mat_name(_new_m))
-                    _reply = _result.get("agent_comment", "")
-                    _q = _result.get("clarifying_question")
-                    if _q:
-                        _reply += f"\n\n❓ **{_q}**"
-                    if _reply:
-                        st.session_state[_chat_key].append({"role": "agent", "text": _reply})
-                    st.rerun()
-        with uc3:
-            if st.button("🗑 Очистить материалы", key=f"mat_clear_{_active_iid}",
-                         use_container_width=True):
-                st.session_state[_mat_key] = []
-                st.session_state[_chat_key] = []
-                st.rerun()
-
-        if st.button("✖ Закрыть редактор", key="mat_close_full"):
-            st.session_state["active_mat_iid"] = None
-            st.rerun()
-
-        st.markdown("---")
 
     # ── Конструктор (расширенный режим) ─────────────────────────────────────
     with st.expander("🔧 Конструктор: создать раздел или свою позицию", expanded=False):
