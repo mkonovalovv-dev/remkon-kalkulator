@@ -645,12 +645,40 @@ with tab_kp:
                 mat_key  = f"mat_{iid}"
                 chat_key = f"mat_chat_{iid}"
                 if mat_key not in st.session_state:
-                    st.session_state[mat_key] = []   # выбранные материалы
+                    # Авто-загрузка материалов из справочника при первом открытии
+                    default_mats = []
+                    for m in it.get("materials", []):
+                        norm  = m.get("norm", 0)
+                        cp    = m.get("price", 0)      # цена в справочнике = клиентская
+                        pp    = int(cp / 1.2)           # расчётная закупочная ~80%
+                        total_q = round(norm * float(qty), 2)
+                        default_mats.append({
+                            "key":          "",
+                            "name":         m.get("name", ""),
+                            "brand":        m.get("name", ""),
+                            "unit":         m.get("unit", ""),
+                            "norm_per_unit": norm,
+                            "qty_total":    total_q,
+                            "variant":      "стандарт",
+                            "purchase_price": pp,
+                            "client_price": cp,
+                        })
+                    st.session_state[mat_key] = default_mats
                 if chat_key not in st.session_state:
                     st.session_state[chat_key] = []  # история диалога
 
-                with st.expander(f"📦 Материалы к «{it['name'][:35]}…»" if len(it['name'])>35
-                                 else f"📦 Материалы к «{it['name']}»", expanded=False):
+                # Предварительный подсчёт для заголовка expander
+                _mats_preview = st.session_state.get(mat_key, [])
+                _mat_preview_total = sum(
+                    m.get("client_price", 0) * m.get("qty_total", 0)
+                    for m in _mats_preview
+                )
+                _mat_count = len(_mats_preview)
+                _exp_label = (
+                    f"📦 Материалы · {_mat_count} поз. · {int(_mat_preview_total):,} ₽"
+                    if _mats_preview else "📦 Материалы — нажмите для подбора"
+                ).replace(",", " ")
+                with st.expander(_exp_label, expanded=False):
 
                     mat_api = st.secrets.get("ANTHROPIC_API_KEY",
                                os.environ.get("ANTHROPIC_API_KEY", ""))
@@ -659,6 +687,17 @@ with tab_kp:
                         step=5, value=20, key=f"mat_markup_{iid}",
                         help="Скрытая наценка: клиент видит рыночную цену, разница — ваша маржа",
                     )
+                    # Кнопка пересчёта объёмов при изменении кол-ва работ
+                    if st.button("🔄 Пересчитать объёмы под текущее кол-во",
+                                 key=f"mat_recalc_{iid}", use_container_width=True):
+                        updated_mats = []
+                        for m in st.session_state[mat_key]:
+                            norm = m.get("norm_per_unit", 0)
+                            if norm > 0:
+                                m["qty_total"] = round(norm * float(qty), 2)
+                            updated_mats.append(m)
+                        st.session_state[mat_key] = updated_mats
+                        st.rerun()
 
                     # Показываем историю диалога
                     for msg in st.session_state[chat_key]:
