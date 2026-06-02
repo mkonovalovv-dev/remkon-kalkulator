@@ -1057,10 +1057,13 @@ with tab_kp:
                 verdict = report.get("verdict", "")
                 summary = report.get("summary", "")
 
-                # Если summary выглядит как JSON — это fallback, парсим заново
-                if summary.strip().startswith("{"):
+                # Если summary содержит JSON — пробуем распарсить повторно
+                if summary and (summary.strip().startswith("{") or '"verdict"' in summary):
                     import re as _re2
-                    _jm2 = _re2.search(r"\{[\s\S]*\}", summary)
+                    # Ищем JSON в тексте
+                    _jm2 = _re2.search(r"\{[\s\S]*?\}", summary)
+                    if not _jm2:
+                        _jm2 = _re2.search(r"\{[\s\S]*\}", summary)
                     if _jm2:
                         try:
                             _r2 = json.loads(_jm2.group())
@@ -1069,7 +1072,12 @@ with tab_kp:
                             verdict = _r2.get("verdict","")
                             summary = _r2.get("summary","")
                         except Exception:
-                            summary = summary[:300]  # обрезаем если JSON не парсится
+                            # Извлекаем summary из сломанного JSON регулярками
+                            _sm = _re2.search(r"summary.*?:(.*?)(?=[,}])", summary)
+                            if _sm:
+                                summary = _sm.group(1)
+                            else:
+                                summary = summary[:400].replace("{","").replace("}","").strip()
 
                 unclear   = report.get("unclear_positions", [])
                 missing   = report.get("missing_items", [])
@@ -1148,6 +1156,15 @@ with tab_kp:
                     st.markdown("**📝 Замечания Василича:**")
                     for note in notes:
                         st.info(f"🔧 {note}")
+
+                # Если всё пустое — показываем сырой ответ
+                if not unclear and not missing and not p_risks and not notes:
+                    raw_sum = report.get("summary","")
+                    if raw_sum and len(raw_sum) > 50:
+                        with st.expander("📄 Ответ Василича (сырой текст)", expanded=True):
+                            st.text(raw_sum[:800])
+                    else:
+                        st.info("Василич ответил, но ответ не удалось разобрать. Попробуйте нажать кнопку ещё раз.")
 
                 if st.button("✖ Закрыть отчёт", key="close_report"):
                     st.session_state["foreman_report"] = None
