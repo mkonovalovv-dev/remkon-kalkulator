@@ -723,48 +723,77 @@ with tab_kp:
                             total_m = int(cp * qty_m)
                             mat_total_client += total_m
 
-                            mc1, mc2, mc3, mc4, mc5 = st.columns([3.5, 2, 1, 1.5, 0.5])
-                            with mc1:
-                                st.write(f"**{m.get('brand', m.get('name',''))}**")
-                                st.caption(m.get("name", ""))
+                            # Строка материала — 2-уровневая компоновка
+                            mr1, mr2, mr_del = st.columns([7, 2, 0.6])
+                            with mr1:
+                                brand_show = m.get('brand') or m.get('name', '—')
+                                name_show  = m.get('name', '')
+                                if brand_show == name_show:
+                                    st.markdown(f"**{brand_show}**")
+                                else:
+                                    st.markdown(f"**{brand_show}**")
+                                    st.caption(name_show)
+                            with mr_del:
+                                if st.button("✖", key=f"mat_rm_{iid}_{mi}"):
+                                    st.session_state[mat_key].pop(mi)
+                                    st.rerun()
+
+                            # Вторая строка: количество | вариант | цена за ед | итого
+                            mc2, mc3, mc4, mc5 = st.columns([2, 2.5, 2, 2])
                             with mc2:
                                 new_qty_m = st.number_input(
                                     m.get("unit", "ед."),
                                     min_value=0.0, value=float(qty_m),
                                     step=0.5, format="%.2f",
                                     key=f"mat_qty_{iid}_{mi}",
-                                    label_visibility="visible",
                                 )
                                 if abs(new_qty_m - qty_m) > 0.001:
                                     st.session_state[mat_key][mi]["qty_total"] = new_qty_m
                                     st.rerun()
                             with mc3:
-                                v_opts = ["эконом", "стандарт", "премиум"]
-                                cur_v  = m.get("variant", "стандарт")
-                                v_idx  = v_opts.index(cur_v) if cur_v in v_opts else 1
-                                new_v  = st.selectbox("", v_opts, index=v_idx,
-                                                      key=f"mat_var_{iid}_{mi}",
-                                                      label_visibility="collapsed")
-                                if new_v != cur_v:
-                                    # Подтягиваем цену из каталога
+                                v_labels = {"эконом": "💰 Эконом", "стандарт": "✅ Стандарт", "премиум": "⭐ Премиум"}
+                                v_opts   = list(v_labels.keys())
+                                cur_v    = m.get("variant", "стандарт")
+                                v_idx    = v_opts.index(cur_v) if cur_v in v_opts else 1
+                                new_v    = st.selectbox("Класс", [v_labels[v] for v in v_opts],
+                                                        index=v_idx,
+                                                        key=f"mat_var_{iid}_{mi}",
+                                                        label_visibility="collapsed")
+                                # Конвертируем обратно в ключ
+                                new_v_key = {v: k for k, v in v_labels.items()}.get(new_v, new_v)
+                                if new_v_key != cur_v:
                                     from materials_agent import MATERIAL_CATALOG
                                     mkey = m.get("key", "")
-                                    if mkey in MATERIAL_CATALOG and new_v in MATERIAL_CATALOG[mkey]["variants"]:
-                                        vdata = MATERIAL_CATALOG[mkey]["variants"][new_v]
-                                        st.session_state[mat_key][mi]["variant"]        = new_v
-                                        st.session_state[mat_key][mi]["brand"]          = vdata["brand"]
-                                        st.session_state[mat_key][mi]["purchase_price"] = vdata["purchase"]
-                                        st.session_state[mat_key][mi]["client_price"]   = vdata["client"]
+                                    if mkey in MATERIAL_CATALOG and new_v_key in MATERIAL_CATALOG[mkey]["variants"]:
+                                        vdata = MATERIAL_CATALOG[mkey]["variants"][new_v_key]
+                                        st.session_state[mat_key][mi].update({
+                                            "variant": new_v_key,
+                                            "brand": vdata["brand"],
+                                            "purchase_price": vdata["purchase"],
+                                            "client_price": vdata["client"],
+                                        })
                                     else:
-                                        st.session_state[mat_key][mi]["variant"] = new_v
+                                        st.session_state[mat_key][mi]["variant"] = new_v_key
                                     st.rerun()
                             with mc4:
-                                st.write(f"**{total_m:,} ₽**".replace(",", " "))
-                                st.caption(f"за клиента")
+                                # Если цена не задана — даём ввести
+                                if cp == 0:
+                                    new_cp = st.number_input(
+                                        "Цена ₽/ед.", min_value=0, step=50,
+                                        key=f"mat_cp_{iid}_{mi}",
+                                        label_visibility="visible",
+                                    )
+                                    if new_cp > 0:
+                                        st.session_state[mat_key][mi]["client_price"] = new_cp
+                                        st.session_state[mat_key][mi]["purchase_price"] = int(new_cp / 1.2)
+                                        st.rerun()
+                                else:
+                                    st.metric("₽/ед.", f"{int(cp):,}".replace(",", " "))
                             with mc5:
-                                if st.button("✖", key=f"mat_rm_{iid}_{mi}"):
-                                    st.session_state[mat_key].pop(mi)
-                                    st.rerun()
+                                if total_m > 0:
+                                    st.metric("Итого", f"{int(total_m):,} ₽".replace(",", " "))
+                                else:
+                                    st.caption("⚠️ Укажите цену")
 
                         st.markdown(f"**Итого материалы: {mat_total_client:,} ₽**".replace(",", " "))
                         st.markdown("---")
