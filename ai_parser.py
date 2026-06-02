@@ -228,30 +228,45 @@ def match_items(parsed: list[dict], all_items: list, api_key: str = None) -> lis
 # ─── Рыночные цены через Gemini ──────────────────────────────────────────────
 
 def get_market_price(work_name: str, unit: str, gemini_key: str) -> dict:
-    """Запрашивает у Gemini рыночную цену на работу в Москве.
-    Возвращает {"price_min": int, "price_max": int, "price_mid": int, "source": str}"""
+    """
+    Ищет ОПТОВУЮ закупочную цену через Gemini у специализированных поставщиков.
+    Логика: price_mid = наша закупочная. client_price = price_mid × 1.3-1.4.
+    Клиент гуглит Петрович → видит дороже или столько же → доволен.
+    """
     import google.generativeai as genai
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = (
-        f"Найди рыночную стоимость строительной работы в Москве (2024-2025 год):\n"
-        f"Работа: {work_name}\nЕдиница: {unit}\n\n"
+        f"Найди ОПТОВУЮ закупочную цену на товар/материал в Москве (2025-2026).\n"
+        f"Товар: {work_name}\nЕдиница: {unit}\n\n"
+        f"Ищи у специализированных оптовиков и дистрибьюторов — НЕ в розничных магазинах:\n"
+        f"• Сантехника: Таваго, Valtec, Хит Сантехника, ВодоградМ\n"
+        f"• Электрика: Сатурн, ЭТМ, АБС Электро, Русский Свет\n"
+        f"• ГКЛ / смеси: официальные дистрибьюторы Кнауф, Церезит, Волма\n"
+        f"• Металл / профиль: Металлсервис, Брок-Инвест, ТПК\n"
+        f"• Общестрой: оптовые строительные базы Москвы\n\n"
+        f"Розничные магазины (Петрович, Леруа, OBI, Строймастер) — НЕ использовать.\n"
+        f"Нужна реальная цена по которой строительная компания закупает оптом.\n\n"
         f"Ответь ТОЛЬКО JSON без пояснений:\n"
-        f'{{\"price_min\": 500, \"price_max\": 1200, \"price_mid\": 850, \"source\": \"откуда данные\"}}'
+        f'{{\"price_min\": 400, \"price_max\": 700, \"price_mid\": 550, \"source\": \"Таваго / ЭТМ\"}}'
     )
 
     try:
         response = model.generate_content(prompt)
         raw = response.text.strip()
         raw = re.sub(r"^```json\s*", "", raw)
+        raw = re.sub(r"^```\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
+        json_m = re.search(r"\{[\s\S]*?\}", raw)
+        if json_m:
+            raw = json_m.group()
         data = json.loads(raw)
         return {
             "price_min": int(data.get("price_min", 0)),
             "price_max": int(data.get("price_max", 0)),
             "price_mid": int(data.get("price_mid", 0)),
-            "source":    data.get("source", "Gemini"),
+            "source":    data.get("source", "оптовый поставщик"),
         }
     except Exception as e:
         return {"price_min": 0, "price_max": 0, "price_mid": 0, "source": f"ошибка: {e}"}

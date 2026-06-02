@@ -1242,19 +1242,16 @@ with tab_kp:
                             label_visibility="visible",
                         )
                         if new_pp2 != pp and new_pp2 > 0:
-                            # Запоминаем правку в памяти агента
-                            _mem_entry = {
-                                "material": m.get("brand") or m.get("name",""),
-                                "unit": m.get("unit",""),
-                                "purchase_price": new_pp2,
-                                "client_price": cp,
-                                "date": str(date.today()),
-                            }
-                            _mem_path = os.path.join(os.path.dirname(__file__), "materials_memory.json")
+                            # Запоминаем правку — дедупликация по имени материала
                             try:
-                                _mem = json.load(open(_mem_path)) if os.path.exists(_mem_path) else []
-                                _mem.append(_mem_entry)
-                                json.dump(_mem[-100:], open(_mem_path, "w"), ensure_ascii=False, indent=2)
+                                from memory import save_correction
+                                save_correction(
+                                    name=m.get("brand") or m.get("name",""),
+                                    unit=m.get("unit",""),
+                                    correction_type="material",
+                                    purchase_price=new_pp2,
+                                    client_price=cp,
+                                )
                             except Exception:
                                 pass
                             st.session_state[_mat_key][mi]["purchase_price"] = new_pp2
@@ -1295,14 +1292,12 @@ with tab_kp:
                          type="primary", use_container_width=True):
                 if _user_mat_input.strip() and _mat_api:
                     from materials_agent import suggest_materials
-                    # Загружаем память агента
-                    _mem_path2 = os.path.join(os.path.dirname(__file__), "materials_memory.json")
-                    _mem2 = []
+                    # Загружаем умную память (дедуплицированные правки)
                     try:
-                        if os.path.exists(_mem_path2):
-                            _mem2 = json.load(open(_mem_path2))[-20:]
+                        from memory import get_memory_list
+                        _mem2 = get_memory_list(limit=30)
                     except Exception:
-                        pass
+                        _mem2 = []
                     with st.spinner("Палыч думает…"):
                         _result = suggest_materials(
                             work_name=_act_item["name"],
