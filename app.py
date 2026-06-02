@@ -307,10 +307,22 @@ with tab_kp:
     st.markdown("---")
 
     # ════════════════════════════════════════════════════
-    # ГЛАВНЫЙ БЛОК: ПОИСК + КОРЗИНА
+    # ГЛАВНЫЙ БЛОК: ПОИСК + КОРЗИНА (с кнопкой фокуса)
     # ════════════════════════════════════════════════════
 
-    left_col, right_col = st.columns([5, 4], gap="large")
+    if "cart_focused" not in st.session_state:
+        st.session_state["cart_focused"] = False
+
+    focus_btn_label = "◀ Скрыть поиск" if not st.session_state["cart_focused"] else "▶ Показать поиск"
+    if st.button(focus_btn_label, key="cart_focus_toggle"):
+        st.session_state["cart_focused"] = not st.session_state["cart_focused"]
+        st.rerun()
+
+    if st.session_state["cart_focused"]:
+        # Корзина на всю ширину, поиск свёрнут
+        left_col, right_col = st.columns([0.001, 1], gap="small")
+    else:
+        left_col, right_col = st.columns([5, 4], gap="large")
 
     # ── ЛЕВАЯ КОЛОНКА: ПОИСК ────────────────────────────────────────────────
     with left_col:
@@ -1400,6 +1412,7 @@ with tab_tz:
     gemini_key = st.secrets.get("GEMINI_API_KEY",   os.environ.get("GEMINI_API_KEY", ""))
 
     if "tz_review"       not in st.session_state: st.session_state["tz_review"]       = None
+    if "tz_foreman_notes" not in st.session_state: st.session_state["tz_foreman_notes"] = {}
     if "tz_review_final" not in st.session_state: st.session_state["tz_review_final"] = None
 
     # ══════════════════════════════════════════
@@ -1498,6 +1511,19 @@ with tab_tz:
                             not_found = sum(1 for r in review if not r["in_catalog"])
                             found     = len(review) - not_found
                             st.session_state["tz_review"] = review
+                            # Сбрасываем авто-прораба для нового разбора
+                            st.session_state["tz_foreman_notes"] = {}
+
+                            # АВТО-ПРОРАБ: быстрая проверка каждой позиции
+                            _fapi = api_key
+                            if _fapi and len(review) > 0:
+                                try:
+                                    from foreman import quick_review_positions
+                                    with st.spinner("Василич смотрит позиции…"):
+                                        _fnotes = quick_review_positions(review, _fapi)
+                                    st.session_state["tz_foreman_notes"] = _fnotes
+                                except Exception:
+                                    pass
 
                             # Стильный итог
                             st.markdown(f"""
@@ -1653,7 +1679,18 @@ with tab_tz:
                         st.markdown(f"{row_color} **{_pn3}**")
                     if row.get("matched_item"):
                         st.caption(f"→ {row['matched_item']['name']}")
+                    # Заметка Василича (авто-прораб)
+                    _fn_note = st.session_state.get("tz_foreman_notes", {}).get(str(row.get("idx", "")))
+                    if _fn_note and _fn_note != "✅ ok":
+                        _fn_color = "#FF8C00" if "⚠️" in _fn_note or "➕" in _fn_note else "#10B981"
+                        st.markdown(
+                            f'<div style="font-size:12px;color:{_fn_color};margin-top:3px;font-weight:500">'
+                            f'🔧 {_fn_note}</div>',
+                            unsafe_allow_html=True
+                        )
                     elif not row.get("in_catalog") and not is_final:
+                        pass  # следующий блок обработает
+                    if not row.get("in_catalog") and not is_final:
                         # Кнопка добавить в справочник
                         if st.button("➕ В справочник", key=f"tz_learn_{idx}"):
                             st.session_state[f"learn_open_{idx}"] = True
