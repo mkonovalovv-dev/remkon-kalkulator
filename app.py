@@ -1207,7 +1207,17 @@ with tab_tz:
                 st.rerun()
         with col_hd3:
             if is_final:
-                if st.button("✏️ Вернуться к правкам", use_container_width=True):
+                if st.button("✏️ Редактировать дальше", use_container_width=True):
+                    # Финальный результат становится новой базой — можно итерировать
+                    final_as_base = st.session_state["tz_review_final"]
+                    if final_as_base:
+                        # Переиндексируем и сбрасываем user_comment для нового раунда
+                        for i, row in enumerate(final_as_base):
+                            row["idx"] = i
+                            row["user_comment"] = ""
+                            row["status"] = "ai_matched"
+                            row["include"] = row.get("status_prev", row.get("status", "unchanged")) != "removed"
+                        st.session_state["tz_review"] = final_as_base
                     st.session_state["tz_review_final"] = None
                     st.rerun()
 
@@ -1292,11 +1302,14 @@ with tab_tz:
 
                 with rc2:
                     if status == "added":
-                        st.markdown(f"{row_color} **{row.get('parsed_name', row.get('name',''))}** *(добавлено)*")
+                        _pn4 = row.get('parsed_name') or row.get('name') or '—'
+                        st.markdown(f"{row_color} **{_pn4}** *(добавлено)*")
                     elif status == "removed":
-                        st.markdown(f"~~{row.get('parsed_name','')}~~ *(убрано)*")
+                        _pn2 = row.get('parsed_name') or row.get('name') or '—'
+                        st.markdown(f"~~{_pn2}~~ *(убрано)*")
                     else:
-                        st.markdown(f"{row_color} **{row.get('parsed_name', '')}**")
+                        _pn3 = row.get('parsed_name') or row.get('name') or '—'
+                        st.markdown(f"{row_color} **{_pn3}**")
                     if row.get("matched_item"):
                         st.caption(f"→ {row['matched_item']['name']}")
                     elif not row.get("in_catalog") and not is_final:

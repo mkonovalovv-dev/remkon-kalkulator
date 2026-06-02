@@ -421,10 +421,32 @@ def reprocess_with_edits(
             updated.append({**p, "status": status, "change_note": ""})
         return updated
 
-    # Обогащаем matched_item из справочника
+    # Обогащаем matched_item из справочника + нормализуем ключи
+    # Claude возвращает "name"/"unit", но display-код ждёт "parsed_name"/"parsed_unit"
     item_map = {i["id"]: i for i in all_items}
+    # Строим маппинг idx → исходная позиция (для fallback parsed_name)
+    orig_by_idx = {p.get("idx", i): p for i, p in enumerate(positions)}
+
     for row in updated:
         mid = row.get("matched_id")
         row["matched_item"] = item_map.get(mid) if mid else None
+        # Нормализация: если нет parsed_name — берём из name или из исходной позиции
+        if not row.get("parsed_name"):
+            orig = orig_by_idx.get(row.get("idx", -1), {})
+            row["parsed_name"] = (row.get("name")
+                                  or orig.get("parsed_name")
+                                  or orig.get("name", "?"))
+        if not row.get("parsed_unit"):
+            orig = orig_by_idx.get(row.get("idx", -1), {})
+            row["parsed_unit"] = (row.get("unit")
+                                  or orig.get("parsed_unit")
+                                  or orig.get("unit", "ед."))
+        # Гарантируем наличие include и user_comment для повторного редактирования
+        if "include" not in row:
+            row["include"] = row.get("status", "unchanged") != "removed"
+        if "user_comment" not in row:
+            row["user_comment"] = ""
+        if "in_catalog" not in row:
+            row["in_catalog"] = row.get("matched_item") is not None
 
     return updated
