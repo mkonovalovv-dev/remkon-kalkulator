@@ -506,9 +506,8 @@ with tab_tz:
     st.subheader("🤖 Загрузить ТЗ/смету — AI автоматически разберёт позиции")
     st.caption("Поддерживаемые форматы: Excel (.xlsx), PDF, Word (.docx)")
 
+    # Ключ берётся из secrets.toml (локально) или Streamlit Cloud Secrets
     api_key = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
-    if not api_key:
-        st.warning("⚠️ Добавьте ANTHROPIC_API_KEY в Streamlit Secrets для работы AI-разбора.")
 
     uploaded = st.file_uploader(
         "Перетащите файл ТЗ или кликните для выбора",
@@ -534,8 +533,8 @@ with tab_tz:
                 except Exception as e:
                     st.error(f"Ошибка: {e}")
 
-    elif uploaded and not api_key:
-        st.info("Добавьте ANTHROPIC_API_KEY в секреты для запуска AI-разбора.")
+    elif not uploaded:
+        st.info("Загрузите файл ТЗ для запуска AI-разбора.")
 
     # ── Результаты разбора ───────────────────────────────────────────────────
     if st.session_state.get("tz_matched"):
