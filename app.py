@@ -1317,14 +1317,18 @@ with tab_tz:
                             matched = match_items(parsed, all_items_combined, api_key)
                             show_step(3, 5, "🔍", "Сопоставляю со справочником…", f"{len(parsed)} позиций → ищу в базе")
 
-                            # Шаг 4: детальная разбивка каждой позиции на подработы + материалы
-                            from ai_parser import expand_works_with_details
-                            _expand_steps = []
-                            def _exp_progress(step, total, msg):
-                                show_step(4, 5, "🧱", f"Разбиваю состав ({step}/{total})…", msg)
-                            expanded = expand_works_with_details(parsed, api_key, _exp_progress)
-                            # Создаём маппинг idx → expanded
-                            expand_map = {e.get("idx", i): e for i, e in enumerate(expanded)}
+                            # Шаг 4: детальная разбивка (с защитой от ошибок импорта)
+                            expand_map = {}
+                            try:
+                                from ai_parser import expand_works_with_details
+                                def _exp_progress(step, total, msg):
+                                    show_step(4, 5, "🧱", f"Разбиваю состав ({step}/{total})…", msg)
+                                expanded = expand_works_with_details(parsed, api_key, _exp_progress)
+                                expand_map = {e.get("idx", i): e for i, e in enumerate(expanded)}
+                            except ImportError:
+                                show_step(4, 5, "🧱", "Разбивка состава…", "пропущено (обновите приложение)")
+                            except Exception as _ex4:
+                                show_step(4, 5, "🧱", "Разбивка состава…", f"пропущено: {_ex4}")
 
                             show_step(5, 5, "✅", "Готово!", f"{len(matched)} позиций с полным составом")
 
