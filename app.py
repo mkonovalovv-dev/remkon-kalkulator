@@ -1749,25 +1749,102 @@ with tab_tz:
                 if override != "— оставить —":
                     iid = next((i["id"] for i in all_items_combined if i["name"] == override), iid)
 
-                # Детальный состав (подработы + материалы от Сергея Николаевича)
-                _sub_works  = row.get("sub_works", [])
+                # Детальный состав + разговорный редактор
+                _sub_works   = row.get("sub_works", [])
                 _detail_mats = row.get("detail_mats", [])
-                if _sub_works or _detail_mats:
-                    with st.expander("📋 Полный состав", expanded=False):
-                        if _sub_works:
+                _breakdown_key = f"breakdown_{idx}"
+                # Сохраняем редактируемый состав в session_state
+                if _breakdown_key not in st.session_state and (_sub_works or _detail_mats):
+                    st.session_state[_breakdown_key] = {
+                        "sub_works": _sub_works,
+                        "materials": _detail_mats,
+                    }
+                _bd = st.session_state.get(_breakdown_key, {})
+                _sw_show  = _bd.get("sub_works", _sub_works)
+                _mat_show = _bd.get("materials", _detail_mats)
+
+                if _sw_show or _mat_show:
+                    with st.expander(
+                        f"📋 Полный состав ({len(_sw_show)} работ · {len(_mat_show)} мат.)",
+                        expanded=False
+                    ):
+                        # Подработы
+                        if _sw_show:
                             st.markdown("**Подработы:**")
-                            for sw in _sub_works:
+                            for sw in _sw_show:
                                 qty_sw = round(sw.get("qty_per_unit",1) * float(row.get("qty",1) or 1), 2)
-                                st.caption(f"• {sw['name']} — {qty_sw} {sw.get('unit','')}")
-                        if _detail_mats:
-                            st.markdown("**Материалы (в коммерческих единицах):**")
-                            for dm in _detail_mats:
+                                _changed = sw.get("changed", False) or sw.get("action","keep") not in ("keep","")
+                                _marker = "🟠 " if _changed else ""
+                                st.caption(f"{_marker}• {sw.get('name','?')} — {qty_sw} {sw.get('unit','')}"
+                                           + (f" | {sw.get('note','')}" if sw.get("note") else ""))
+
+                        # Материалы
+                        if _mat_show:
+                            st.markdown("**Материалы (к заказу):**")
+                            for dm in _mat_show:
                                 qty_ord = dm.get("qty_order") or dm.get("qty_raw")
-                                note    = dm.get("note","")
+                                _changed = dm.get("changed", False) or dm.get("action","keep") not in ("keep","")
+                                _marker = "🟠 " if _changed else ""
                                 st.caption(
-                                    f"• {dm['name']} — **{qty_ord} {dm.get('unit','')}**"
-                                    + (f" _(_{note}_)_" if note else "")
+                                    f"{_marker}• {dm.get('name','?')} — **{qty_ord} {dm.get('unit','')}**"
+                                    + (f" _{dm.get('note','')}_" if dm.get("note") else "")
                                 )
+
+                        # Связанные разделы (рекомендации)
+                        _related = row.get("related_sections", [])
+                        if _related:
+                            for rs in _related:
+                                st.info(rs)
+
+                        st.markdown("---")
+                        # ── РАЗГОВОРНЫЙ РЕДАКТОР ─────────────────────────────
+                        st.markdown("**✏️ Написать что изменить (человеческим языком):**")
+                        _ed_key = f"edit_input_{idx}"
+                        _edit_col1, _edit_col2 = st.columns([5, 1.5])
+                        with _edit_col1:
+                            _edit_text = st.text_input(
+                                "Правка",
+                                placeholder="Убери маяки, добавь 2л чёрной краски, замени дюбели на дюбель-гвозди…",
+                                key=_ed_key,
+                                label_visibility="collapsed",
+                            )
+                        with _edit_col2:
+                            _apply_api = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY",""))
+                            if st.button("✅ Применить", key=f"apply_edit_{idx}",
+                                         type="primary", use_container_width=True):
+                                if _edit_text.strip() and _apply_api:
+                                    from ai_parser import apply_text_edit_to_breakdown
+                                    with st.spinner("Применяю правку…"):
+                                        _result = apply_text_edit_to_breakdown(
+                                            sub_works=_sw_show,
+                                            materials=_mat_show,
+                                            user_instruction=_edit_text.strip(),
+                                            work_name=row.get("parsed_name",""),
+                                            work_qty=float(row.get("qty",1) or 1),
+                                            api_key=_apply_api,
+                                        )
+                                    st.session_state[_breakdown_key] = {
+                                        "sub_works": _result.get("sub_works", _sw_show),
+                                        "materials": _result.get("materials", _mat_show),
+                                    }
+                                    _sum = _result.get("summary","")
+                                    if _sum:
+                                        st.success(f"✅ {_sum}")
+                                    # Сохраняем правку в память агента
+                                    try:
+                                        from memory import save_correction
+                                        save_correction(
+                                            name=row.get("parsed_name",""),
+                                            unit=row.get("parsed_unit",""),
+                                            correction_type="work",
+                                            edit=_edit_text.strip(),
+                                            result_summary=_sum,
+                                        )
+                                    except Exception:
+                                        pass
+                                    st.rerun()
+                                elif not _edit_text.strip():
+                                    st.warning("Напишите что изменить")
             with mc4:
                 qty_default = float(m["qty"]) if m["qty"] else 0.0
                 qty_val = st.number_input(

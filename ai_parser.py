@@ -682,3 +682,97 @@ def get_work_market_price(work_name: str, unit: str, gemini_key: str) -> dict:
     except Exception as e:
         return {"price_min": 0, "price_max": 0, "price_mid": 0, "source": f"ошибка: {e}",
                 "what_included": "", "warning": None}
+
+
+# ─── Разговорный редактор разбивки позиции ────────────────────────────────────
+
+EDIT_BREAKDOWN_SYSTEM = """Ты — умный помощник строительной компании. Получаешь текущий состав работы
+(подработы и материалы) и инструкцию на русском языке от менеджера.
+
+Применяй изменения ТОЧНО как написано. Примеры команд:
+- "добавь 3 двери" → добавь позицию "Установка межкомнатной двери" qty_order=3
+- "убери укрытие полов" → удали позицию с похожим названием
+- "измени штукатурку на 45м2" → обнови qty_raw и qty_order для штукатурки
+- "замени дюбели на дюбель-гвозди" → обнови название и тип
+- "добавь 2л краски чёрной" → добавь "Краска чёрная" qty_order=2, unit="л"
+- "убери маяки, добавь армирующую сетку" → несколько изменений за раз
+
+ПРАВИЛА:
+- Пиши профессиональные строительные названия (не "дюбелик" а "Дюбель-гвоздь 6×40мм")
+- Округляй материалы до целых упаковок/единиц
+- Для каждого изменения ставь action: "add" | "update" | "remove"
+- Сохраняй ВСЕ позиции которые не затронуты изменением (action="keep")
+
+Верни ТОЛЬКО JSON:
+{
+  "sub_works": [
+    {"action": "keep|add|update|remove", "name": "...", "unit": "м²", "qty_per_unit": 1.0, "note": "", "changed": false}
+  ],
+  "materials": [
+    {"action": "keep|add|update|remove", "name": "...", "unit": "шт.", "qty_raw": 10.0, "qty_order": 10.0, "note": "", "changed": false}
+  ],
+  "summary": "Что изменено в 1-2 предложениях"
+}"""
+
+
+def apply_text_edit_to_breakdown(
+    sub_works: list,
+    materials: list,
+    user_instruction: str,
+    work_name: str,
+    work_qty: float,
+    api_key: str,
+) -> dict:
+    """
+    Применяет текстовую правку к разбивке позиции.
+    Возвращает {sub_works: [...], materials: [...], summary: str}
+    Каждый элемент имеет поле action: keep|add|update|remove и changed: bool
+    """
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+
+    sw_text = "\n".join(
+        f"  • {sw.get('name','')} | {sw.get('qty_per_unit',1)} {sw.get('unit','')} | {sw.get('note','')}"
+        for sw in sub_works
+    ) or "  (пусто)"
+
+    mat_text = "\n".join(
+        f"  • {m.get('name','')} | к заказу: {m.get('qty_order',0)} {m.get('unit','')} | {m.get('note','')}"
+        for m in materials
+    ) or "  (пусто)"
+
+    prompt = (
+        f"РАБОТА: {work_name} | {work_qty} {''}\n\n"
+        f"ТЕКУЩИЕ ПОДРАБОТЫ:\n{sw_text}\n\n"
+        f"ТЕКУЩИЕ МАТЕРИАЛЫ:\n{mat_text}\n\n"
+        f"ИНСТРУКЦИЯ МЕНЕДЖЕРА: {user_instruction}"
+    )
+
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=2000,
+        system=EDIT_BREAKDOWN_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = msg.content[0].text.strip()
+    raw = re.sub(r"^```json\s*", "", raw)
+    raw = re.sub(r"^```\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    json_m = re.search(r"\{[\s\S]*\}", raw)
+    if json_m:
+        raw = json_m.group()
+
+    try:
+        result = json.loads(raw)
+        # Помечаем changed для удобства отображения
+        for item in result.get("sub_works", []):
+            item["changed"] = item.get("action", "keep") != "keep"
+        for item in result.get("materials", []):
+            item["changed"] = item.get("action", "keep") != "keep"
+        # Фильтруем удалённые
+        result["sub_works"] = [x for x in result.get("sub_works", []) if x.get("action") != "remove"]
+        result["materials"] = [x for x in result.get("materials", []) if x.get("action") != "remove"]
+        return result
+    except Exception as e:
+        return {"sub_works": sub_works, "materials": materials, "summary": f"Не удалось применить: {e}"}
