@@ -1307,19 +1307,30 @@ with tab_tz:
     <div style="background:linear-gradient(90deg,#1D4ED8,#3B82F6);width:{pct}%;height:8px;border-radius:999px"></div>
   </div>
   <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-    {''.join(f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;background:{"#DCFCE7;color:#166534" if i<step else ("#DBEAFE;color:#1E40AF" if i==step else "#F1F5F9;color:#94A3B8")};font-weight:600">{s}</span>' for i,s in enumerate(["Читаю файл","Извлекаю работы","Ищу в справочнике","Готово"]))}
+    {''.join(f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;background:{"#DCFCE7;color:#166534" if i<step else ("#DBEAFE;color:#1E40AF" if i==step else "#F1F5F9;color:#94A3B8")};font-weight:600">{s}</span>' for i,s in enumerate(["Читаю файл","Извлекаю работы","Ищу в справочнике","Разбиваю состав","Готово"]))}
   </div>
 </div>""", unsafe_allow_html=True)
 
-                            show_step(1, 4, "📂", "Читаю документ…", f"{uploaded.name}")
+                            show_step(1, 5, "📂", "Читаю документ…", f"{uploaded.name}")
                             parsed = call_claude_api(raw_text, api_key)
-                            show_step(2, 4, "🤖", "Извлекаю виды работ…", f"Claude Sonnet анализирует текст ТЗ")
+                            show_step(2, 5, "🤖", "Извлекаю виды работ…", f"Сергей Николаевич: {len(parsed)} позиций")
                             matched = match_items(parsed, all_items_combined, api_key)
-                            show_step(3, 4, "🔍", "Сопоставляю со справочником…", f"Найдено {len(parsed)} позиций")
-                            show_step(4, 4, "✅", "Разбор завершён!", f"Проверьте результат ниже")
+                            show_step(3, 5, "🔍", "Сопоставляю со справочником…", f"{len(parsed)} позиций → ищу в базе")
+
+                            # Шаг 4: детальная разбивка каждой позиции на подработы + материалы
+                            from ai_parser import expand_works_with_details
+                            _expand_steps = []
+                            def _exp_progress(step, total, msg):
+                                show_step(4, 5, "🧱", f"Разбиваю состав ({step}/{total})…", msg)
+                            expanded = expand_works_with_details(parsed, api_key, _exp_progress)
+                            # Создаём маппинг idx → expanded
+                            expand_map = {e.get("idx", i): e for i, e in enumerate(expanded)}
+
+                            show_step(5, 5, "✅", "Готово!", f"{len(matched)} позиций с полным составом")
 
                             review = []
                             for i, m in enumerate(matched):
+                                exp_data = expand_map.get(i, {})
                                 review.append({
                                     "idx":          i,
                                     "parsed_name":  m["parsed_name"],
@@ -1333,6 +1344,9 @@ with tab_tz:
                                     "include":      True,
                                     "user_comment": "",
                                     "status":       "ai_matched",
+                                    # Детальная разбивка от Сергея Николаевича
+                                    "sub_works":    exp_data.get("sub_works", []),
+                                    "detail_mats":  exp_data.get("materials", []),
                                 })
 
                             not_found = sum(1 for r in review if not r["in_catalog"])
@@ -1734,6 +1748,26 @@ with tab_tz:
                                         label_visibility="collapsed")
                 if override != "— оставить —":
                     iid = next((i["id"] for i in all_items_combined if i["name"] == override), iid)
+
+                # Детальный состав (подработы + материалы от Сергея Николаевича)
+                _sub_works  = row.get("sub_works", [])
+                _detail_mats = row.get("detail_mats", [])
+                if _sub_works or _detail_mats:
+                    with st.expander("📋 Полный состав", expanded=False):
+                        if _sub_works:
+                            st.markdown("**Подработы:**")
+                            for sw in _sub_works:
+                                qty_sw = round(sw.get("qty_per_unit",1) * float(row.get("qty",1) or 1), 2)
+                                st.caption(f"• {sw['name']} — {qty_sw} {sw.get('unit','')}")
+                        if _detail_mats:
+                            st.markdown("**Материалы (в коммерческих единицах):**")
+                            for dm in _detail_mats:
+                                qty_ord = dm.get("qty_order") or dm.get("qty_raw")
+                                note    = dm.get("note","")
+                                st.caption(
+                                    f"• {dm['name']} — **{qty_ord} {dm.get('unit','')}**"
+                                    + (f" _(_{note}_)_" if note else "")
+                                )
             with mc4:
                 qty_default = float(m["qty"]) if m["qty"] else 0.0
                 qty_val = st.number_input(

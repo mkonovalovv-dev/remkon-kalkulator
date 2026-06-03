@@ -487,3 +487,121 @@ def reprocess_with_edits(
             row["in_catalog"] = row.get("matched_item") is not None
 
     return updated
+
+
+# ─── Шаг 3: Детальная разбивка работ на подработы и материалы ────────────────
+
+EXPAND_SYSTEM = """Ты — Сергей Николаевич, главный прораб с 30-летним стажем и тремя строительными дипломами.
+
+Тебе дан список работ из ТЗ с объёмами. Для каждой работы составь ПОЛНУЮ детальную разбивку:
+1. Все подработы в технологической последовательности
+2. Все материалы в коммерческих единицах (не дроби!)
+
+ПРАВИЛА ПРО МАТЕРИАЛЫ:
+- Всегда округляй в сторону целой упаковки/единицы (нельзя купить 2.3 мешка — берём 3)
+- Добавляй технологический запас: 5% на хрупкие, 10% на профили/погонаж, 3% на смеси
+- Включай расходники и крепёж (дюбели, саморезы, скобы, пленку)
+- Включай расходные материалы: перчатки, маски, мешки для мусора
+- Материалы пересчитывай с учётом объёма работы
+
+ПРАВИЛА ПРО ПОДРАБОТЫ:
+- Только реальные работы которые нужно оплачивать рабочим
+- В технологическом порядке
+- Подготовительные (разметка, грунтовка) — отдельно
+- Основные — отдельно
+- Уборочные (вывоз мусора, снятие лесов) — отдельно
+
+Верни ТОЛЬКО JSON без пояснений:
+[
+  {
+    "idx": 0,
+    "name": "Исходная работа из ТЗ",
+    "unit": "м²",
+    "qty": 100.0,
+    "sub_works": [
+      {"name": "Очистка основания", "unit": "м²", "qty_per_unit": 1.0, "note": ""},
+      {"name": "Грунтовка", "unit": "м²", "qty_per_unit": 1.0, "note": "2 слоя"}
+    ],
+    "materials": [
+      {
+        "name": "Грунтовка Knauf Tiefengrund 10л",
+        "unit": "канистра 10л",
+        "qty_per_unit": 0.15,
+        "qty_raw": 15.0,
+        "qty_order": 20.0,
+        "pack_size": 10.0,
+        "note": "расход 0.15л/м², +5%, канистра 10л → 2 канистры"
+      }
+    ]
+  }
+]"""
+
+
+def expand_works_with_details(
+    positions: list[dict],
+    api_key: str,
+    progress_callback=None,
+) -> list[dict]:
+    """
+    Шаг 3: Детальная разбивка каждой позиции на подработы + материалы.
+    Работает батчами по 10 позиций чтобы не перегружать контекст.
+    progress_callback(step, total, msg) — опциональный колбэк для прогресс-бара.
+    """
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+
+    BATCH = 8  # позиций за один вызов
+    all_results = []
+
+    for batch_start in range(0, len(positions), BATCH):
+        batch = positions[batch_start:batch_start + BATCH]
+
+        if progress_callback:
+            step = batch_start // BATCH + 1
+            total = (len(positions) + BATCH - 1) // BATCH
+            names = ", ".join(p.get("name", "?")[:25] for p in batch[:2])
+            progress_callback(step, total, f"Разбиваю: {names}…")
+
+        # Компактное описание батча
+        batch_text = "\n".join(
+            f"{p['idx']}: {p.get('name','?')} | {p.get('qty','?')} {p.get('unit','?')}"
+            for p in batch
+        )
+
+        try:
+            msg = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8000,
+                system=EXPAND_SYSTEM,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Сделай детальную разбивку для этих {len(batch)} позиций:\n\n"
+                        f"{batch_text}"
+                    )
+                }],
+            )
+            raw = msg.content[0].text.strip()
+            raw = re.sub(r"^```json\s*", "", raw)
+            raw = re.sub(r"^```\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            # Вытаскиваем JSON массив
+            arr_m = re.search(r"\[[\s\S]*\]", raw)
+            if arr_m:
+                raw = arr_m.group()
+            batch_result = json.loads(raw)
+            all_results.extend(batch_result)
+        except Exception as e:
+            # Если батч упал — добавляем позиции без разбивки
+            for p in batch:
+                all_results.append({
+                    "idx": p.get("idx", 0),
+                    "name": p.get("name", ""),
+                    "unit": p.get("unit", ""),
+                    "qty": p.get("qty"),
+                    "sub_works": [],
+                    "materials": [],
+                    "expand_error": str(e),
+                })
+
+    return all_results
