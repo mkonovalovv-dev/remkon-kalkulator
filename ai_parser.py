@@ -118,36 +118,57 @@ def extract_works_from_tz(text: str, api_key: str) -> list[dict]:
     raw = re.sub(r"^```\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
-    # Устойчивый парсинг: восстанавливаем обрезанный JSON
+    # Устойчивый парсинг — 4 уровня защиты
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
-        # Пробуем вырезать всё до последнего полного объекта
-        last_obj_end = raw.rfind("},")
-        if last_obj_end > 0:
-            raw_fixed = raw[:last_obj_end + 1] + "\n]"
+    except json.JSONDecodeError as _je:
+        err_str = str(_je)
+
+        # Уровень 1: Unterminated string — закрываем строку по месту разрыва
+        if "Unterminated string" in err_str:
             try:
-                result = json.loads(raw_fixed)
-                # Переиндексируем
+                pos = _je.pos
+                raw2 = raw[:pos] + '"'  # закрываем незакрытую строку
+                # Закрываем все открытые {} и []
+                depth_obj = raw2.count('{') - raw2.count('}')
+                depth_arr = raw2.count('[') - raw2.count(']')
+                raw2 += '}' * max(0, depth_obj) + ']' * max(0, depth_arr)
+                result = json.loads(raw2)
                 for i, item in enumerate(result):
                     item["idx"] = i
                 return result
-            except json.JSONDecodeError:
+            except Exception:
                 pass
-        # Если совсем плохо — пробуем регулярками вытащить хотя бы имена
-        names = re.findall(r'"name"\s*:\s*"([^"]+)"', raw)
-        units = re.findall(r'"unit"\s*:\s*"([^"]+)"', raw)
+
+        # Уровень 2: Обрезаем до последнего полного объекта
+        last_obj_end = raw.rfind("},")
+        if last_obj_end > 0:
+            try:
+                raw3 = raw[:last_obj_end + 1] + "\n]"
+                result = json.loads(raw3)
+                for i, item in enumerate(result):
+                    item["idx"] = i
+                return result
+            except Exception:
+                pass
+
+        # Уровень 3: Вытаскиваем регулярками
+        names = re.findall(r'"name"\s*:\s*"((?:[^"\\]|\\.)+)"', raw)
+        units = re.findall(r'"unit"\s*:\s*"((?:[^"\\]|\\.)+)"', raw)
         qtys  = re.findall(r'"qty"\s*:\s*([\d\.]+|null)', raw)
         if names:
             result = []
             for i, name in enumerate(names):
                 result.append({
-                    "idx": i, "name": name,
-                    "unit": units[i] if i < len(units) else "ед.",
+                    "idx": i,
+                    "name": name.replace('\\"', '"'),
+                    "unit": (units[i] if i < len(units) else "ед.").replace('\\"', '"'),
                     "qty": float(qtys[i]) if i < len(qtys) and qtys[i] != "null" else None,
                 })
             return result
-        raise  # Если совсем ничего — поднимаем исходную ошибку
+
+        # Уровень 4: Поднимаем оригинальную ошибку
+        raise
 
 
 # ─── Шаг 2: Семантическое сопоставление через Claude ────────────────────────
