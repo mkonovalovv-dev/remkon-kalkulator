@@ -109,14 +109,45 @@ def extract_works_from_tz(text: str, api_key: str) -> list[dict]:
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=6000,
         system=EXTRACT_SYSTEM,
         messages=[{"role": "user", "content": f"Извлеки работы:\n\n{text[:14000]}"}],
     )
     raw = msg.content[0].text.strip()
     raw = re.sub(r"^```json\s*", "", raw)
+    raw = re.sub(r"^```\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
-    return json.loads(raw)
+
+    # Устойчивый парсинг: восстанавливаем обрезанный JSON
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # Пробуем вырезать всё до последнего полного объекта
+        last_obj_end = raw.rfind("},")
+        if last_obj_end > 0:
+            raw_fixed = raw[:last_obj_end + 1] + "\n]"
+            try:
+                result = json.loads(raw_fixed)
+                # Переиндексируем
+                for i, item in enumerate(result):
+                    item["idx"] = i
+                return result
+            except json.JSONDecodeError:
+                pass
+        # Если совсем плохо — пробуем регулярками вытащить хотя бы имена
+        names = re.findall(r'"name"\s*:\s*"([^"]+)"', raw)
+        units = re.findall(r'"unit"\s*:\s*"([^"]+)"', raw)
+        qtys  = re.findall(r'"qty"\s*:\s*([\d\.]+|null)', raw)
+        if names:
+            result = []
+            for i, name in enumerate(names):
+                result.append({
+                    "idx": i, "name": name,
+                    "unit": units[i] if i < len(units) else "ед.",
+                    "qty": float(qtys[i]) if i < len(qtys) and qtys[i] != "null" else None,
+                })
+            return result
+        raise  # Если совсем ничего — поднимаем исходную ошибку
 
 
 # ─── Шаг 2: Семантическое сопоставление через Claude ────────────────────────
