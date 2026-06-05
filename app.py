@@ -1307,7 +1307,7 @@ with tab_tz:
     <div style="background:linear-gradient(90deg,#1D4ED8,#3B82F6);width:{pct}%;height:8px;border-radius:999px"></div>
   </div>
   <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-    {''.join(f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;background:{"#DCFCE7;color:#166534" if i<step else ("#DBEAFE;color:#1E40AF" if i==step else "#F1F5F9;color:#94A3B8")};font-weight:600">{s}</span>' for i,s in enumerate(["Читаю файл","Извлекаю работы","Ищу в справочнике","Разбиваю состав","Готово"]))}
+    {''.join(f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;background:{"#DCFCE7;color:#166534" if i<step else ("#DBEAFE;color:#1E40AF" if i==step else "#F1F5F9;color:#94A3B8")};font-weight:600">{s}</span>' for i,s in enumerate(["Читаю файл","Извлекаю работы","Ищу в справочнике","Готово"]))}
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -1315,26 +1315,12 @@ with tab_tz:
                             parsed = call_claude_api(raw_text, api_key)
                             show_step(2, 5, "🤖", "Извлекаю виды работ…", f"Сергей Николаевич: {len(parsed)} позиций")
                             matched = match_items(parsed, all_items_combined, api_key)
-                            show_step(3, 5, "🔍", "Сопоставляю со справочником…", f"{len(parsed)} позиций → ищу в базе")
+                            show_step(3, 4, "🔍", "Сопоставляю со справочником…", f"{len(parsed)} позиций → ищу в базе")
 
-                            # Шаг 4: детальная разбивка (с защитой от ошибок импорта)
-                            expand_map = {}
-                            try:
-                                from ai_parser import expand_works_with_details
-                                def _exp_progress(step, total, msg):
-                                    show_step(4, 5, "🧱", f"Разбиваю состав ({step}/{total})…", msg)
-                                expanded = expand_works_with_details(parsed, api_key, _exp_progress)
-                                expand_map = {e.get("idx", i): e for i, e in enumerate(expanded)}
-                            except ImportError:
-                                show_step(4, 5, "🧱", "Разбивка состава…", "пропущено (обновите приложение)")
-                            except Exception as _ex4:
-                                show_step(4, 5, "🧱", "Разбивка состава…", f"пропущено: {_ex4}")
-
-                            show_step(5, 5, "✅", "Готово!", f"{len(matched)} позиций с полным составом")
+                            show_step(4, 4, "✅", "Готово!", f"{len(matched)} позиций найдено")
 
                             review = []
                             for i, m in enumerate(matched):
-                                exp_data = expand_map.get(i, {})
                                 review.append({
                                     "idx":          i,
                                     "parsed_name":  m["parsed_name"],
@@ -1348,9 +1334,10 @@ with tab_tz:
                                     "include":      True,
                                     "user_comment": "",
                                     "status":       "ai_matched",
-                                    # Детальная разбивка от Сергея Николаевича
-                                    "sub_works":    exp_data.get("sub_works", []),
-                                    "detail_mats":  exp_data.get("materials", []),
+                                    # Детальная разбивка — загружается по клику (lazy)
+                                    "sub_works":    [],
+                                    "detail_mats":  [],
+                                    "expanded":     False,
                                 })
 
                             not_found = sum(1 for r in review if not r["in_catalog"])
@@ -1766,6 +1753,36 @@ with tab_tz:
                 _bd = st.session_state.get(_breakdown_key, {})
                 _sw_show  = _bd.get("sub_works", _sub_works)
                 _mat_show = _bd.get("materials", _detail_mats)
+
+                # Кнопка lazy-загрузки разбивки
+                _expanded_flag = row.get("expanded", False)
+                _has_bd = _sw_show or _mat_show or _expanded_flag
+                _exp_btn_label = (
+                    f"📋 Полный состав ({len(_sw_show)} работ · {len(_mat_show)} мат.)"
+                    if _has_bd else "🧱 Разобрать по составу (Сергей Николаевич)"
+                )
+                if not _has_bd:
+                    # Кнопка запускает expand по требованию
+                    _exp_api = st.secrets.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY",""))
+                    if st.button(_exp_btn_label, key=f"lazy_expand_{idx}", use_container_width=True):
+                        try:
+                            from ai_parser import expand_works_with_details
+                            with st.spinner("Сергей Николаевич разбирает состав…"):
+                                _exp_one = expand_works_with_details(
+                                    [{"idx": idx, "name": row.get("parsed_name",""), "unit": row.get("parsed_unit",""), "qty": row.get("qty",0)}],
+                                    _exp_api
+                                )
+                            if _exp_one:
+                                _e = _exp_one[0]
+                                if st.session_state.get("tz_review"):
+                                    st.session_state["tz_review"][idx]["sub_works"]   = _e.get("sub_works", [])
+                                    st.session_state["tz_review"][idx]["detail_mats"] = _e.get("materials", [])
+                                    st.session_state["tz_review"][idx]["expanded"]    = True
+                                    if _breakdown_key not in st.session_state:
+                                        st.session_state[_breakdown_key] = {"sub_works": _e.get("sub_works",[]), "materials": _e.get("materials",[])}
+                                    st.rerun()
+                        except Exception as _e2:
+                            st.warning(f"Не удалось разобрать: {_e2}")
 
                 if _sw_show or _mat_show:
                     with st.expander(

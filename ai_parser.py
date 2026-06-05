@@ -109,7 +109,7 @@ def extract_works_from_tz(text: str, api_key: str) -> list[dict]:
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=8000,
+        max_tokens=4096,
         system=EXTRACT_SYSTEM,
         messages=[{"role": "user", "content": f"Извлеки работы:\n\n{text[:14000]}"}],
     )
